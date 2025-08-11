@@ -60,10 +60,8 @@ const generateShortCode = (length = 6) => {
 
 // --- Gemini API Helper ---
 const callGeminiAPI = async (prompt) => {
-    // IMPORTANT: To fix the build warning, we are now hardcoding the API key.
-    // Paste your Gemini API key here. For a real production app, it's more secure 
-    // to use environment variables, but this method will work for this environment.
-    const apiKey = "YOUR_GEMINI_API_KEY_HERE"; 
+    // Your Gemini API key is now included.
+    const apiKey = "AIzaSyC24luvljlvWXKhjgjq6XcR1-6ZPUKWpbw"; 
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
     
     const payload = {
@@ -71,7 +69,7 @@ const callGeminiAPI = async (prompt) => {
     };
 
     try {
-        if (apiKey === "YOUR_GEMINI_API_KEY_HERE") {
+        if (apiKey === "YOUR_GEMINI_API_KEY_HERE" || apiKey === "") {
             return "Please add your Gemini API key to the code to use this feature.";
         }
         const response = await fetch(apiUrl, {
@@ -96,27 +94,42 @@ const callGeminiAPI = async (prompt) => {
 // --- Robust PGN Loader ---
 const loadPgnWithRobustParsing = (pgnString) => {
     const game = new Chess();
+    // The chess.js pgn loader is very strict. We'll try it first.
     if (game.loadPgn(pgnString)) {
         return game;
     }
+
+    // If it fails, strip headers and try again.
     const pgnWithoutHeaders = pgnString.replace(/\[.*?\]\s*/g, '');
-    if (game.loadPgn(pgnWithoutHeaders)) {
-        return game;
+    const game2 = new Chess();
+    if (game2.loadPgn(pgnWithoutHeaders)) {
+        return game2;
     }
+    
+    // If it STILL fails, do a full manual cleaning and load move by move.
+    // This is the most resilient method for malformed PGNs from various sources.
     const moveText = pgnString
-        .replace(/\[.*?\]\s*|\{.*?\}|\(.*?\)|1-0|0-1|1\/2-1\/2|\*|\d+\.{1,3}\s*/g, '')
-        .replace(/\s+/g, ' ')
+        .replace(/\[.*?\]\s*/g, '') // remove headers
+        .replace(/\{.*?\}/g, '')    // remove comments
+        .replace(/\d+\.{1,3}\s*/g, '') // remove move numbers like "1." or "1..."
+        .replace(/1-0|0-1|1\/2-1\/2|\*/g, '') // remove result
+        .replace(/\s+/g, ' ')       // collapse whitespace
         .trim();
+
     const moves = moveText.split(' ');
     const finalGame = new Chess();
     try {
         for (const move of moves) {
             if (move.trim() === '') continue;
-            if (finalGame.move(move) === null) return null;
+            if (finalGame.move(move) === null) {
+                console.error("Manual parse failed on move:", move);
+                return null; // Invalid move found
+            }
         }
         return finalGame;
     } catch (e) {
-        return null;
+        console.error("Manual parse threw error:", e);
+        return null; // Error during move application
     }
 };
 
@@ -227,12 +240,12 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
             stockfish.postMessage('uci');
             stockfish.postMessage('isready');
             stockfish.postMessage(`setoption name Skill Level value ${difficulty}`);
-            if (computerColor === 'w' && new Chess().turn() === 'w') {
-                stockfish.postMessage(`position fen ${new Chess().fen()}`);
+            if (computerColor === 'w' && game.turn() === 'w') {
+                stockfish.postMessage(`position fen ${game.fen()}`);
                 stockfish.postMessage('go depth 15');
             }
         }
-    }, [mode, difficulty, playerColor, computerColor]);
+    }, [mode, difficulty, playerColor, computerColor, game]);
 
     useEffect(() => {
         if (game.isGameOver()) {
