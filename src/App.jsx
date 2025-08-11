@@ -17,9 +17,30 @@ import {
 } from 'firebase/firestore';
 
 // --- Stockfish Integration Placeholder ---
+// This is a more realistic mock that simulates the engine's asynchronous behavior.
 const stockfish = {
-    postMessage: (command) => console.log(`Stockfish command: ${command}`),
+    postMessage: (command) => {
+        console.log(`Stockfish command: ${command}`);
+        if (command.startsWith('go')) {
+            // Simulate thinking time
+            setTimeout(() => {
+                if (stockfish.onmessage) {
+                    // In a real scenario, the engine calculates the best move.
+                    // Here, we'll just find a random legal move to simulate a response.
+                    const game = new Chess(stockfish._currentFen);
+                    const moves = game.moves({ verbose: true });
+                    if (moves.length > 0) {
+                        const bestMove = moves[Math.floor(Math.random() * moves.length)];
+                        stockfish.onmessage({ data: `bestmove ${bestMove.from}${bestMove.to}` });
+                    }
+                }
+            }, 1000); // 1 second thinking time
+        } else if (command.startsWith('position fen')) {
+            stockfish._currentFen = command.substring(13);
+        }
+    },
     onmessage: null,
+    _currentFen: '',
 };
 
 // --- Firebase Configuration ---
@@ -121,13 +142,53 @@ function ImportPgnModal({ onImport, onClose }) {
     );
 }
 
-function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, onGameOver }) {
+function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerColor = 'w', onGameOver }) {
     const [game, setGame] = useState(new Chess());
     const [gameData, setGameData] = useState(null);
     const [orientation, setOrientation] = useState('white');
     const [message, setMessage] = useState(null);
     const [copied, setCopied] = useState(false);
     
+    const computerColor = useMemo(() => playerColor === 'w' ? 'b' : 'w', [playerColor]);
+
+    // This effect handles the computer's turn.
+    useEffect(() => {
+        if (mode === 'computer' && game.turn() === computerColor && !game.isGameOver()) {
+            stockfish.postMessage(`position fen ${game.fen()}`);
+            stockfish.postMessage('go depth 15');
+        }
+    }, [game, mode, computerColor]);
+
+    // This effect initializes the game, including making the first move if the computer is white.
+    useEffect(() => {
+        if (mode === 'computer') {
+            setOrientation(playerColor === 'w' ? 'white' : 'black');
+            stockfish.onmessage = (event) => {
+                const message = event.data || event;
+                if (message.startsWith('bestmove')) {
+                    const bestMove = message.split(' ')[1];
+                    if (bestMove) {
+                        setGame((g) => {
+                            const gameCopy = new Chess(g.fen());
+                            const moveResult = gameCopy.move(bestMove, { sloppy: true });
+                            return moveResult ? gameCopy : g;
+                        });
+                    }
+                }
+            };
+            stockfish.postMessage('uci');
+            stockfish.postMessage('isready');
+            stockfish.postMessage(`setoption name Skill Level value ${difficulty}`);
+
+            // If computer is white, it needs to make the first move.
+            if (computerColor === 'w') {
+                stockfish.postMessage(`position fen ${new Chess().fen()}`);
+                stockfish.postMessage('go depth 15');
+            }
+        }
+    }, [mode, difficulty, playerColor, computerColor]);
+
+
     useEffect(() => {
         if (game.isGameOver()) {
             let title = "Game Over";
@@ -140,14 +201,15 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, onGameOve
     }, [game, onGameOver]);
 
     const isPlayerTurn = useMemo(() => {
-        if (!gameData && mode !== 'computer') return false;
-        if (mode === 'local' || (mode === 'computer' && game.turn() === 'w')) return true;
-        if (mode === 'online') {
-            const playerColor = gameData.playerWhite === userId ? 'w' : 'b';
-            return game.turn() === playerColor;
+        if (game.isGameOver()) return false;
+        if (mode === 'local') return true;
+        if (mode === 'computer') return game.turn() === playerColor;
+        if (mode === 'online' && gameData) {
+            const onlinePlayerColor = gameData.playerWhite === userId ? 'w' : 'b';
+            return game.turn() === onlinePlayerColor;
         }
         return false;
-    }, [game, gameData, userId, mode]);
+    }, [game, gameData, userId, mode, playerColor]);
 
     useEffect(() => {
         if (mode !== 'online' || !gameId || !db) return;
@@ -175,7 +237,7 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, onGameOve
     }, [mode]);
 
     const onPieceDrop = useCallback((sourceSquare, targetSquare) => {
-        if (!isPlayerTurn || game.isGameOver()) return false;
+        if (!isPlayerTurn) return false;
         const gameCopy = new Chess(game.fen());
         const move = gameCopy.move({ from: sourceSquare, to: targetSquare, promotion: 'q' });
         if (move === null) return false;
@@ -206,7 +268,9 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, onGameOve
     };
 
     const getStatusMessage = () => {
-        if (mode === 'computer') return `Playing vs. Computer (Skill: ${difficulty})`;
+        if (mode === 'computer') {
+            return isPlayerTurn ? "Your turn" : "Computer is thinking...";
+        }
         if (!gameData) return "Loading...";
         if (mode === 'local') return `Turn: ${game.turn() === 'w' ? 'White' : 'Black'}`;
         if (gameData.status === 'waiting') return `Waiting for opponent... Code: ${gameData.shortCode.toUpperCase()}`;
@@ -244,7 +308,8 @@ function AnalysisPage({ pgn, onExit }) {
     useEffect(() => {
         if (pgn) {
             const gameCopy = new Chess();
-            gameCopy.loadPgn(pgn);
+            const moveText = pgn.replace(/\[.*?\]\s*|\{.*?\}|\(.*?\)|1-0|0-1|1\/2-1\/2|\*/g, '').trim();
+            gameCopy.loadPgn(moveText);
             setGame(gameCopy);
         }
     }, [pgn]);
@@ -267,15 +332,17 @@ function AnalysisPage({ pgn, onExit }) {
     };
     
     const handleCopyPgnWithAnalysis = () => {
+        const gameWithHeaders = new Chess();
+        gameWithHeaders.loadPgn(pgn);
         const tempGame = new Chess();
-        const history = game.history({verbose: true});
+        const headers = gameWithHeaders.header();
+        for (const key in headers) tempGame.header(key, headers[key]);
+        const history = game.history({ verbose: true });
         history.forEach((move, index) => {
             tempGame.move(move.san);
-            if (analysis[index] && analysis[index].comment) {
-                tempGame.setComment(analysis[index].comment);
-            }
+            if (analysis[index] && analysis[index].comment) tempGame.setComment(analysis[index].comment);
         });
-        const annotatedPgn = tempGame.pgn();
+        const annotatedPgn = tempGame.pgn({ maxWidth: 5, newline: '\n' });
         const textArea = document.createElement('textarea');
         textArea.value = annotatedPgn;
         document.body.appendChild(textArea);
@@ -317,6 +384,8 @@ function AnalysisPage({ pgn, onExit }) {
 
 function HomePage({ onNewGame, onJoinGame, onLocalGame, onComputerGame, onImportGame }) {
     const [difficulty, setDifficulty] = useState(10);
+    const [playerColor, setPlayerColor] = useState('random');
+
     return (
         <div className="min-h-screen bg-gray-900 flex flex-col justify-center items-center text-white p-4">
             <div className="text-center mb-12">
@@ -328,11 +397,20 @@ function HomePage({ onNewGame, onJoinGame, onLocalGame, onComputerGame, onImport
                 <button onClick={onJoinGame} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-4 rounded-lg text-xl shadow-lg">Join with Code</button>
                 <button onClick={onLocalGame} className="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-4 px-4 rounded-lg text-xl shadow-lg">Play Over The Table</button>
                 <button onClick={onImportGame} className="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-4 px-4 rounded-lg text-xl shadow-lg">Import PGN</button>
+                
                 <div className="bg-gray-800 p-4 rounded-lg">
+                    <div className="text-center mb-4">
+                        <p className="text-lg font-medium text-gray-300 mb-2">Play as:</p>
+                        <div className="inline-flex rounded-md shadow-sm" role="group">
+                            <button onClick={() => setPlayerColor('w')} type="button" className={`px-4 py-2 text-sm font-medium rounded-l-lg ${playerColor === 'w' ? 'bg-purple-800 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>White</button>
+                            <button onClick={() => setPlayerColor('random')} type="button" className={`px-4 py-2 text-sm font-medium ${playerColor === 'random' ? 'bg-purple-800 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>Random</button>
+                            <button onClick={() => setPlayerColor('b')} type="button" className={`px-4 py-2 text-sm font-medium rounded-r-lg ${playerColor === 'b' ? 'bg-purple-800 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>Black</button>
+                        </div>
+                    </div>
                     <label htmlFor="difficulty" className="block text-center text-lg font-medium text-gray-300 mb-2">Computer Difficulty</label>
                     <input type="range" id="difficulty" min="0" max="20" value={difficulty} onChange={(e) => setDifficulty(e.target.value)} className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer" />
                     <div className="text-center text-gray-400 mt-1">Skill Level: {difficulty}</div>
-                    <button onClick={() => onComputerGame(difficulty)} className="w-full mt-4 bg-purple-600 hover:bg-purple-700 text-white font-bold py-4 px-4 rounded-lg text-xl shadow-lg">Play vs. Computer</button>
+                    <button onClick={() => onComputerGame(difficulty, playerColor)} className="w-full mt-4 bg-purple-600 hover:bg-purple-700 text-white font-bold py-4 px-4 rounded-lg text-xl shadow-lg">Play vs. Computer</button>
                 </div>
             </div>
         </div>
@@ -344,6 +422,7 @@ export default function App() {
     const [gameId, setGameId] = useState(null);
     const [gameMode, setGameMode] = useState('local');
     const [difficulty, setDifficulty] = useState(10);
+    const [playerColor, setPlayerColor] = useState('w');
     const [pgnToAnalyze, setPgnToAnalyze] = useState('');
     const [showJoinModal, setShowJoinModal] = useState(false);
     const [showImportModal, setShowImportModal] = useState(false);
@@ -419,10 +498,15 @@ export default function App() {
         setIsLoading(false);
     };
     
-    const handleComputerGame = (diff) => {
+    const handleComputerGame = (diff, color) => {
+        let chosenColor = color;
+        if (color === 'random') {
+            chosenColor = Math.random() > 0.5 ? 'w' : 'b';
+        }
         setGameId(null);
         setGameMode('computer');
         setDifficulty(diff);
+        setPlayerColor(chosenColor);
         setPage('game');
     };
 
@@ -433,17 +517,16 @@ export default function App() {
     };
 
     const handleImportPgn = (pgn) => {
+        setShowImportModal(false);
         const tempGame = new Chess();
-        const loaded = tempGame.loadPgn(pgn);
-
+        const moveText = pgn.replace(/\[.*?\]\s*|\{.*?\}|\(.*?\)|1-0|0-1|1\/2-1\/2|\*/g, '').trim();
+        const loaded = tempGame.loadPgn(moveText);
         if (!loaded) {
-            setMessage({ title: "Invalid PGN", message: "Could not load the PGN. Please check the format." });
+            setMessage({ title: "Invalid PGN", message: "Could not load the PGN. Please check the format and moves." });
             return;
         }
-        
         setPgnToAnalyze(pgn);
         setPage('analysis');
-        setShowImportModal(false);
     };
 
     const handleExitGame = () => {
@@ -455,7 +538,7 @@ export default function App() {
         if (isLoading) return <div className="min-h-screen bg-gray-900 flex justify-center items-center"><h1 className="text-white text-3xl">Loading...</h1></div>;
         switch (page) {
             case 'game':
-                return <GamePage gameId={gameId} mode={gameMode} userId={userId} db={db} onExit={handleExitGame} difficulty={difficulty} onGameOver={handleGameOver} />;
+                return <GamePage gameId={gameId} mode={gameMode} userId={userId} db={db} onExit={handleExitGame} difficulty={difficulty} playerColor={playerColor} onGameOver={handleGameOver} />;
             case 'analysis':
                 return <AnalysisPage pgn={pgnToAnalyze} onExit={handleExitGame} />;
             default:
