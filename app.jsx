@@ -18,9 +18,16 @@ import {
 } from 'firebase/firestore';
 
 // --- Firebase Configuration ---
-// This configuration is provided by the environment.
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'just-chess-default';
+// This is your specific configuration from your Firebase project.
+const firebaseConfig = {
+  apiKey: "AIzaSyD6gCgxx3NpDCr_4iqQfRg9jNNTljOcIq4",
+  authDomain: "justchess-6afd3.firebaseapp.com",
+  projectId: "justchess-6afd3",
+  storageBucket: "justchess-6afd3.appspot.com",
+  messagingSenderId: "890708766145",
+  appId: "1:890708766145:web:d9140f62a58068d8181340"
+};
+const appId = 'justchess-6afd3'; // Using your projectId as a unique identifier
 
 // --- Helper Functions ---
 const generateShortCode = (length = 6) => {
