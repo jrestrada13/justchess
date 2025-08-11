@@ -70,7 +70,7 @@ const callGeminiAPI = async (prompt) => {
 
     try {
         if (apiKey === "YOUR_GEMINI_API_KEY_HERE" || apiKey === "") {
-            return "Please add your Gemini API key to the code to use this feature.";
+            return "Error: No Gemini API key found. Please add your key to the App.jsx file.";
         }
         const response = await fetch(apiUrl, {
             method: 'POST',
@@ -78,6 +78,10 @@ const callGeminiAPI = async (prompt) => {
             body: JSON.stringify(payload)
         });
         if (!response.ok) {
+            // Provide a more helpful error message for API key issues.
+            if (response.status === 400) {
+                 return "Error: The Gemini API key is invalid or not configured correctly in your Google Cloud project. Please check for restrictions and ensure the Generative Language API is enabled.";
+            }
             throw new Error(`API call failed with status: ${response.status}`);
         }
         const result = await response.json();
@@ -87,56 +91,50 @@ const callGeminiAPI = async (prompt) => {
         return "Sorry, I couldn't generate a response.";
     } catch (error) {
         console.error("Gemini API call failed:", error);
-        return "An error occurred while contacting the AI assistant.";
+        return `An error occurred while contacting the AI assistant: ${error.message}`;
     }
 };
 
 // --- Robust PGN Loader ---
 const loadPgnWithRobustParsing = (pgnString) => {
     const game = new Chess();
-    // The chess.js pgn loader is very strict. We'll try it first.
     if (game.loadPgn(pgnString)) {
         return game;
     }
-
-    // If it fails, strip headers and try again.
     const pgnWithoutHeaders = pgnString.replace(/\[.*?\]\s*/g, '');
     const game2 = new Chess();
     if (game2.loadPgn(pgnWithoutHeaders)) {
         return game2;
     }
-    
-    // If it STILL fails, do a full manual cleaning and load move by move.
-    // This is the most resilient method for malformed PGNs from various sources.
     const moveText = pgnString
-        .replace(/\[.*?\]\s*/g, '') // remove headers
-        .replace(/\{.*?\}/g, '')    // remove comments
-        .replace(/\d+\.{1,3}\s*/g, '') // remove move numbers like "1." or "1..."
-        .replace(/1-0|0-1|1\/2-1\/2|\*/g, '') // remove result
-        .replace(/\s+/g, ' ')       // collapse whitespace
+        .replace(/\[.*?\]\s*|\{.*?\}|\(.*?\)|1-0|0-1|1\/2-1\/2|\*|\d+\.{1,3}\s*/g, '')
+        .replace(/\s+/g, ' ')
         .trim();
-
     const moves = moveText.split(' ');
     const finalGame = new Chess();
     try {
         for (const move of moves) {
             if (move.trim() === '') continue;
-            if (finalGame.move(move) === null) {
-                console.error("Manual parse failed on move:", move);
-                return null; // Invalid move found
-            }
+            if (finalGame.move(move) === null) return null;
         }
         return finalGame;
     } catch (e) {
-        console.error("Manual parse threw error:", e);
-        return null; // Error during move application
+        return null;
     }
 };
 
 
 // --- React Components ---
 
-function MessageModal({ title, message, onClose, onAnalyze }) {
+function MessageModal({ title, message, onClose, onAnalyze, onShare, shareData }) {
+    const [copied, setCopied] = useState(false);
+
+    const handleShare = () => {
+        onShare(shareData);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    };
+
     return (
         <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50">
             <div className="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm mx-4 text-center">
@@ -145,6 +143,11 @@ function MessageModal({ title, message, onClose, onAnalyze }) {
                 <div className="flex flex-col space-y-3">
                     {onAnalyze && (
                          <button onClick={onAnalyze} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg">Analyze Game</button>
+                    )}
+                    {onShare && (
+                        <button onClick={handleShare} className={`w-full font-bold py-3 px-4 rounded-lg transition-colors ${copied ? 'bg-green-600' : 'bg-purple-600 hover:bg-purple-700'} text-white`}>
+                            {copied ? 'Link Copied!' : 'Copy Game Link'}
+                        </button>
                     )}
                     <button onClick={onClose} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg">Close</button>
                 </div>
@@ -210,13 +213,7 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
     
     const computerColor = useMemo(() => playerColor === 'w' ? 'b' : 'w', [playerColor]);
 
-    useEffect(() => {
-        if (mode === 'computer' && game.turn() === computerColor && !game.isGameOver()) {
-            stockfish.postMessage(`position fen ${game.fen()}`);
-            stockfish.postMessage('go depth 15');
-        }
-    }, [game, mode, computerColor]);
-
+    // Setup engine and make first move if computer is white
     useEffect(() => {
         if (mode === 'computer') {
             setOrientation(playerColor === 'w' ? 'white' : 'black');
@@ -240,12 +237,22 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
             stockfish.postMessage('uci');
             stockfish.postMessage('isready');
             stockfish.postMessage(`setoption name Skill Level value ${difficulty}`);
-            if (computerColor === 'w' && game.turn() === 'w') {
-                stockfish.postMessage(`position fen ${game.fen()}`);
+            
+            if (computerColor === 'w') {
+                const newGame = new Chess();
+                stockfish.postMessage(`position fen ${newGame.fen()}`);
                 stockfish.postMessage('go depth 15');
             }
         }
-    }, [mode, difficulty, playerColor, computerColor, game]);
+    }, [mode, difficulty, playerColor, computerColor]);
+
+    // Trigger computer's subsequent moves
+    useEffect(() => {
+        if (mode === 'computer' && game.turn() === computerColor && !game.isGameOver()) {
+            stockfish.postMessage(`position fen ${game.fen()}`);
+            stockfish.postMessage('go depth 15');
+        }
+    }, [game, mode, computerColor]);
 
     useEffect(() => {
         if (game.isGameOver()) {
@@ -704,7 +711,10 @@ export default function App() {
 
     return (
         <>
-            {message && <MessageModal title={message.title} message={message.message} onClose={() => setMessage(null)} />}
+            {message && <MessageModal title={message.title} message={message.message} onClose={() => setMessage(null)} onShare={(data) => {
+                const url = `${window.location.href.split('?')[0]}?gameId=${data.gameId}`;
+                navigator.clipboard.writeText(url);
+            }} shareData={page === 'game' && gameMode === 'online' ? { gameId } : null} />}
             {showJoinModal && <JoinModal onJoin={handleJoinOnlineGame} onClose={() => setShowJoinModal(false)} />}
             {showImportModal && <ImportPgnModal onImport={handleImportPgn} onClose={() => setShowImportModal(false)} />}
             {renderContent()}
