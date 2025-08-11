@@ -60,7 +60,10 @@ const generateShortCode = (length = 6) => {
 
 // --- Gemini API Helper ---
 const callGeminiAPI = async (prompt) => {
-    const apiKey = ""; // Leave empty, handled by environment
+    // IMPORTANT: To fix the build warning, we are now hardcoding the API key.
+    // Paste your Gemini API key here. For a real production app, it's more secure 
+    // to use environment variables, but this method will work for this environment.
+    const apiKey = "YOUR_GEMINI_API_KEY_HERE"; 
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
     
     const payload = {
@@ -68,6 +71,9 @@ const callGeminiAPI = async (prompt) => {
     };
 
     try {
+        if (apiKey === "YOUR_GEMINI_API_KEY_HERE") {
+            return "Please add your Gemini API key to the code to use this feature.";
+        }
         const response = await fetch(apiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -329,20 +335,38 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
     return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 p-4">
             {message && <MessageModal title={message.title} message={message.message} onClose={() => setMessage(null)} onAnalyze={game.isGameOver() ? () => onGameOver(game.pgn(), true) : null} />}
-            <div className="w-full max-w-lg md:max-w-xl lg:max-w-2xl">
-                <div className="bg-gray-800 text-white p-3 rounded-t-lg text-center font-semibold text-lg">{getStatusMessage()}</div>
-                <Chessboard position={game.fen()} onPieceDrop={onPieceDrop} boardOrientation={orientation} />
-                <div className="bg-gray-800 p-4">
-                    <div className="bg-gray-900 rounded-lg p-3 h-24 overflow-y-auto">
+            
+            <div className="w-full max-w-7xl mx-auto flex flex-col lg:flex-row gap-4">
+                {/* PGN Tracker - Side (Desktop) */}
+                <div className="hidden lg:block w-72 bg-gray-800 p-4 rounded-lg">
+                    <h3 className="text-white text-lg font-bold mb-2">Moves</h3>
+                    <div className="bg-gray-900 rounded-lg p-3 h-[calc(100vh-12rem)] max-h-[600px] overflow-y-auto">
                         <p className="text-white font-mono text-sm whitespace-pre-wrap break-words">{game.pgn() || "No moves yet."}</p>
                     </div>
                 </div>
-                <div className="bg-gray-800 p-4 rounded-b-lg flex justify-between items-center">
-                    <button onClick={handleSuggestPlan} disabled={isSuggestingPlan || game.isGameOver()} className="font-bold py-2 px-5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white disabled:bg-gray-500">
-                        {isSuggestingPlan ? 'Thinking...' : '✨ Suggest a Plan'}
-                    </button>
-                    <button onClick={handleCopyPgn} className={`font-bold py-2 px-5 rounded-lg transition duration-300 ${copied ? 'bg-green-600' : 'bg-blue-600 hover:bg-blue-700'} text-white`}>{copied ? 'Copied!' : 'Copy PGN'}</button>
-                    <button onClick={onExit} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-5 rounded-lg">Exit Game</button>
+
+                {/* Main Board and Controls */}
+                <div className="flex-1 flex flex-col">
+                    <div className="bg-gray-800 text-white p-3 rounded-t-lg text-center font-semibold text-lg">{getStatusMessage()}</div>
+                    
+                    {/* PGN Tracker - Ticker (Mobile) */}
+                    <div className="lg:hidden bg-gray-800 p-2">
+                        <div className="bg-gray-900 rounded-lg p-2 overflow-x-auto whitespace-nowrap">
+                            <p className="text-white font-mono text-sm">{game.pgn() || "No moves yet."}</p>
+                        </div>
+                    </div>
+
+                    <div className="w-full">
+                        <Chessboard position={game.fen()} onPieceDrop={onPieceDrop} boardOrientation={orientation} />
+                    </div>
+
+                    <div className="bg-gray-800 p-4 rounded-b-lg flex justify-between items-center">
+                        <button onClick={handleSuggestPlan} disabled={isSuggestingPlan || game.isGameOver()} className="font-bold py-2 px-5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white disabled:bg-gray-500">
+                            {isSuggestingPlan ? 'Thinking...' : '✨ Suggest a Plan'}
+                        </button>
+                        <button onClick={handleCopyPgn} className={`font-bold py-2 px-5 rounded-lg transition duration-300 ${copied ? 'bg-green-600' : 'bg-blue-600 hover:bg-blue-700'} text-white`}>{copied ? 'Copied!' : 'Copy PGN'}</button>
+                        <button onClick={onExit} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-5 rounded-lg">Exit Game</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -357,7 +381,6 @@ function AnalysisPage({ pgn, onExit }) {
     const [analysis, setAnalysis] = useState([]);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [isSummarizing, setIsSummarizing] = useState(false);
-    const [copied, setCopied] = useState(false);
     const [explanation, setExplanation] = useState({ show: false, text: '', title: '' });
 
     useEffect(() => {
@@ -429,22 +452,17 @@ function AnalysisPage({ pgn, onExit }) {
         const newAnalysis = [];
         for (let i = 0; i < history.length; i++) {
             await new Promise(resolve => setTimeout(resolve, 100));
-            
-            // Specifically mark the user's brilliant moves
             const currentMoveSan = history[i].san;
             if ((i === 16 && currentMoveSan === 'Ne5') || (i === 22 && currentMoveSan === 'Nxc6')) {
                 newAnalysis.push({ move: currentMoveSan, comment: "Brilliant (!!)" });
                 continue;
             }
-
             let classifications = ["Good Move", "Excellent", "Inaccuracy", "Blunder", "Best Move"];
-            if (Math.random() < 0.1) { // 10% chance to classify as a bluff
-                classifications.push("Bluff (?!)");
-            }
+            if (Math.random() < 0.1) classifications.push("Bluff (?!)");
             const randomClassification = classifications[Math.floor(Math.random() * classifications.length)];
             newAnalysis.push({ move: history[i].san, comment: randomClassification });
-            setAnalysis([...newAnalysis]);
         }
+        setAnalysis(newAnalysis);
         setIsAnalyzing(false);
     };
     
@@ -453,17 +471,11 @@ function AnalysisPage({ pgn, onExit }) {
     return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 p-4">
             {explanation.show && <MessageModal title={explanation.title} message={explanation.text} onClose={() => setExplanation({ show: false, text: '', title: '' })} />}
-            <div className="w-full max-w-lg md:max-w-xl lg:max-w-2xl">
-                 <div className="bg-gray-800 text-white p-3 rounded-t-lg text-center font-semibold text-lg">Game Analysis</div>
-                <Chessboard position={displayFen} boardOrientation="white" />
-                 <div className="bg-gray-800 p-4 flex justify-center space-x-2">
-                    <button onClick={() => setCurrentMoveIndex(-1)} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">« First</button>
-                    <button onClick={() => setCurrentMoveIndex(p => Math.max(p - 1, -1))} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">‹ Prev</button>
-                    <button onClick={() => setCurrentMoveIndex(p => Math.min(p + 1, history.length - 1))} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">Next ›</button>
-                    <button onClick={() => setCurrentMoveIndex(history.length - 1)} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">Last »</button>
-                </div>
-                <div className="bg-gray-800 p-4">
-                    <div className="bg-gray-900 rounded-lg p-3 h-48 overflow-y-auto">
+            <div className="w-full max-w-7xl mx-auto flex flex-col lg:flex-row gap-4">
+                {/* PGN Tracker - Side (Desktop) */}
+                <div className="hidden lg:block w-72 bg-gray-800 p-4 rounded-lg">
+                    <h3 className="text-white text-lg font-bold mb-2">Analysis</h3>
+                    <div className="bg-gray-900 rounded-lg p-3 h-[calc(100vh-16rem)] max-h-[600px] overflow-y-auto">
                         {history.map((move, index) => (
                             <div key={index} className={`p-1 rounded cursor-pointer ${currentMoveIndex === index ? 'bg-purple-800' : ''}`} onClick={() => setCurrentMoveIndex(index)}>
                                 <span className="text-white font-mono text-sm">
@@ -476,10 +488,37 @@ function AnalysisPage({ pgn, onExit }) {
                         ))}
                     </div>
                 </div>
-                <div className="bg-gray-800 p-4 rounded-b-lg flex flex-wrap justify-center gap-2">
-                    <button onClick={runAnalysis} disabled={isAnalyzing} className="font-bold py-2 px-4 rounded-lg bg-green-600 hover:bg-green-700 text-white disabled:bg-gray-500">{isAnalyzing ? 'Analyzing...' : 'Run Analysis'}</button>
-                    <button onClick={handleSummarizeGame} disabled={isSummarizing || !pgn} className="font-bold py-2 px-4 rounded-lg bg-purple-600 hover:bg-purple-700 text-white disabled:bg-gray-500">{isSummarizing ? 'Summarizing...' : '✨ Summarize Game'}</button>
-                    <button onClick={onExit} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg">Back to Home</button>
+                
+                {/* Main Board and Controls */}
+                <div className="flex-1 flex flex-col">
+                    <div className="bg-gray-800 text-white p-3 rounded-t-lg text-center font-semibold text-lg">Game Analysis</div>
+                    <Chessboard position={displayFen} boardOrientation="white" />
+                    <div className="bg-gray-800 p-4 flex justify-center space-x-2">
+                        <button onClick={() => setCurrentMoveIndex(-1)} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">« First</button>
+                        <button onClick={() => setCurrentMoveIndex(p => Math.max(p - 1, -1))} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">‹ Prev</button>
+                        <button onClick={() => setCurrentMoveIndex(p => Math.min(p + 1, history.length - 1))} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">Next ›</button>
+                        <button onClick={() => setCurrentMoveIndex(history.length - 1)} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">Last »</button>
+                    </div>
+                    {/* PGN Tracker - Ticker (Mobile) */}
+                    <div className="lg:hidden bg-gray-800 p-4">
+                        <div className="bg-gray-900 rounded-lg p-3 h-48 overflow-y-auto">
+                           {history.map((move, index) => (
+                                <div key={index} className={`p-1 rounded cursor-pointer ${currentMoveIndex === index ? 'bg-purple-800' : ''}`} onClick={() => setCurrentMoveIndex(index)}>
+                                    <span className="text-white font-mono text-sm">
+                                        {index % 2 === 0 && `${Math.floor(index/2) + 1}. `}
+                                        {move.san}
+                                    </span>
+                                    {analysis[index] && <span className="text-gray-400 ml-2">({analysis[index].comment})</span>}
+                                    {analysis[index] && <button onClick={(e) => { e.stopPropagation(); handleExplainMove(index); }} className="text-xs bg-purple-600 hover:bg-purple-700 rounded px-2 py-1 ml-2">✨ Explain</button>}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    <div className="bg-gray-800 p-4 rounded-b-lg flex flex-wrap justify-center gap-2">
+                        <button onClick={runAnalysis} disabled={isAnalyzing} className="font-bold py-2 px-4 rounded-lg bg-green-600 hover:bg-green-700 text-white disabled:bg-gray-500">{isAnalyzing ? 'Analyzing...' : 'Run Analysis'}</button>
+                        <button onClick={handleSummarizeGame} disabled={isSummarizing || !pgn} className="font-bold py-2 px-4 rounded-lg bg-purple-600 hover:bg-purple-700 text-white disabled:bg-gray-500">{isSummarizing ? 'Summarizing...' : '✨ Summarize Game'}</button>
+                        <button onClick={onExit} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg">Back to Home</button>
+                    </div>
                 </div>
             </div>
         </div>
