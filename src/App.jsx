@@ -17,16 +17,12 @@ import {
 } from 'firebase/firestore';
 
 // --- Stockfish Integration Placeholder ---
-// This is a more realistic mock that simulates the engine's asynchronous behavior.
 const stockfish = {
     postMessage: (command) => {
         console.log(`Stockfish command: ${command}`);
         if (command.startsWith('go')) {
-            // Simulate thinking time
             setTimeout(() => {
                 if (stockfish.onmessage) {
-                    // In a real scenario, the engine calculates the best move.
-                    // Here, we'll just find a random legal move to simulate a response.
                     const game = new Chess(stockfish._currentFen);
                     const moves = game.moves({ verbose: true });
                     if (moves.length > 0) {
@@ -34,7 +30,7 @@ const stockfish = {
                         stockfish.onmessage({ data: `bestmove ${bestMove.from}${bestMove.to}` });
                     }
                 }
-            }, 1000); // 1 second thinking time
+            }, 1000);
         } else if (command.startsWith('position fen')) {
             stockfish._currentFen = command.substring(13);
         }
@@ -62,6 +58,63 @@ const generateShortCode = (length = 6) => {
     return result;
 };
 
+// --- Gemini API Helper ---
+const callGeminiAPI = async (prompt) => {
+    const apiKey = ""; // Leave empty, handled by environment
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+    
+    const payload = {
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+    };
+
+    try {
+        const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+            throw new Error(`API call failed with status: ${response.status}`);
+        }
+        const result = await response.json();
+        if (result.candidates && result.candidates.length > 0 && result.candidates[0].content.parts.length > 0) {
+            return result.candidates[0].content.parts[0].text;
+        }
+        return "Sorry, I couldn't generate a response.";
+    } catch (error) {
+        console.error("Gemini API call failed:", error);
+        return "An error occurred while contacting the AI assistant.";
+    }
+};
+
+// --- Robust PGN Loader ---
+const loadPgnWithRobustParsing = (pgnString) => {
+    const game = new Chess();
+    if (game.loadPgn(pgnString)) {
+        return game;
+    }
+    const pgnWithoutHeaders = pgnString.replace(/\[.*?\]\s*/g, '');
+    if (game.loadPgn(pgnWithoutHeaders)) {
+        return game;
+    }
+    const moveText = pgnString
+        .replace(/\[.*?\]\s*|\{.*?\}|\(.*?\)|1-0|0-1|1\/2-1\/2|\*|\d+\.{1,3}\s*/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const moves = moveText.split(' ');
+    const finalGame = new Chess();
+    try {
+        for (const move of moves) {
+            if (move.trim() === '') continue;
+            if (finalGame.move(move) === null) return null;
+        }
+        return finalGame;
+    } catch (e) {
+        return null;
+    }
+};
+
+
 // --- React Components ---
 
 function MessageModal({ title, message, onClose, onAnalyze }) {
@@ -69,16 +122,12 @@ function MessageModal({ title, message, onClose, onAnalyze }) {
         <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50">
             <div className="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm mx-4 text-center">
                 <h3 className="text-2xl font-bold text-white mb-3">{title}</h3>
-                <p className="text-gray-300 mb-6">{message}</p>
+                <p className="text-gray-300 mb-6 whitespace-pre-wrap">{message}</p>
                 <div className="flex flex-col space-y-3">
                     {onAnalyze && (
-                         <button onClick={onAnalyze} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg transition duration-300">
-                            Analyze Game
-                        </button>
+                         <button onClick={onAnalyze} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg">Analyze Game</button>
                     )}
-                    <button onClick={onClose} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition duration-300">
-                        Close
-                    </button>
+                    <button onClick={onClose} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg">Close</button>
                 </div>
             </div>
         </div>
@@ -110,7 +159,6 @@ function JoinModal({ onJoin, onClose }) {
 function ImportPgnModal({ onImport, onClose }) {
     const [pgn, setPgn] = useState('');
     const [error, setError] = useState('');
-
     const handleImport = () => {
         if (pgn.trim() === '') {
             setError('Please paste a PGN string.');
@@ -118,20 +166,11 @@ function ImportPgnModal({ onImport, onClose }) {
         }
         onImport(pgn);
     };
-
     return (
         <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50">
             <div className="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md mx-4">
                 <h3 className="text-2xl font-bold text-white mb-4 text-center">Import PGN</h3>
-                <textarea
-                    value={pgn}
-                    onChange={(e) => {
-                        setPgn(e.target.value);
-                        setError('');
-                    }}
-                    placeholder="[Event &quot;?&quot;]..."
-                    className="w-full bg-gray-700 text-white border-2 border-gray-600 rounded-lg p-3 h-48 font-mono text-sm"
-                />
+                <textarea value={pgn} onChange={(e) => { setPgn(e.target.value); setError(''); }} placeholder="[Event &quot;?&quot;]..." className="w-full bg-gray-700 text-white border-2 border-gray-600 rounded-lg p-3 h-48 font-mono text-sm" />
                 {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
                 <div className="flex gap-4 mt-6">
                     <button onClick={onClose} className="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-4 rounded-lg">Cancel</button>
@@ -148,10 +187,10 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
     const [orientation, setOrientation] = useState('white');
     const [message, setMessage] = useState(null);
     const [copied, setCopied] = useState(false);
+    const [isSuggestingPlan, setIsSuggestingPlan] = useState(false);
     
     const computerColor = useMemo(() => playerColor === 'w' ? 'b' : 'w', [playerColor]);
 
-    // This effect handles the computer's turn.
     useEffect(() => {
         if (mode === 'computer' && game.turn() === computerColor && !game.isGameOver()) {
             stockfish.postMessage(`position fen ${game.fen()}`);
@@ -159,18 +198,21 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
         }
     }, [game, mode, computerColor]);
 
-    // This effect initializes the game, including making the first move if the computer is white.
     useEffect(() => {
         if (mode === 'computer') {
             setOrientation(playerColor === 'w' ? 'white' : 'black');
             stockfish.onmessage = (event) => {
                 const message = event.data || event;
                 if (message.startsWith('bestmove')) {
-                    const bestMove = message.split(' ')[1];
-                    if (bestMove) {
+                    const moveStr = message.split(' ')[1];
+                    if (moveStr) {
                         setGame((g) => {
-                            const gameCopy = new Chess(g.fen());
-                            const moveResult = gameCopy.move(bestMove, { sloppy: true });
+                            const gameCopy = new Chess();
+                            gameCopy.loadPgn(g.pgn());
+                            const from = moveStr.substring(0, 2);
+                            const to = moveStr.substring(2, 4);
+                            const promotion = moveStr.length > 4 ? moveStr.substring(4, 5) : undefined;
+                            const moveResult = gameCopy.move({ from, to, promotion });
                             return moveResult ? gameCopy : g;
                         });
                     }
@@ -179,15 +221,12 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
             stockfish.postMessage('uci');
             stockfish.postMessage('isready');
             stockfish.postMessage(`setoption name Skill Level value ${difficulty}`);
-
-            // If computer is white, it needs to make the first move.
-            if (computerColor === 'w') {
+            if (computerColor === 'w' && new Chess().turn() === 'w') {
                 stockfish.postMessage(`position fen ${new Chess().fen()}`);
                 stockfish.postMessage('go depth 15');
             }
         }
     }, [mode, difficulty, playerColor, computerColor]);
-
 
     useEffect(() => {
         if (game.isGameOver()) {
@@ -238,7 +277,8 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
 
     const onPieceDrop = useCallback((sourceSquare, targetSquare) => {
         if (!isPlayerTurn) return false;
-        const gameCopy = new Chess(game.fen());
+        const gameCopy = new Chess();
+        gameCopy.loadPgn(game.pgn());
         const move = gameCopy.move({ from: sourceSquare, to: targetSquare, promotion: 'q' });
         if (move === null) return false;
         setGame(gameCopy);
@@ -249,7 +289,7 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
             updateDoc(gameRef, { fen: gameCopy.fen(), pgn: gameCopy.pgn() });
         }
         return true;
-    }, [game, gameId, isPlayerTurn, mode, db]);
+    }, [game, isPlayerTurn, mode, db, gameId]);
     
     const handleCopyPgn = () => {
         const pgn = game.pgn();
@@ -267,10 +307,17 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
         document.body.removeChild(textArea);
     };
 
+    const handleSuggestPlan = async () => {
+        setIsSuggestingPlan(true);
+        const turn = game.turn() === 'w' ? 'White' : 'Black';
+        const prompt = `You are a friendly chess coach. Given the following chess position in FEN notation, suggest a simple, strategic plan for ${turn}. Focus on 1-2 key ideas. FEN: ${game.fen()}`;
+        const plan = await callGeminiAPI(prompt);
+        setMessage({ title: "✨ Strategic Plan", message: plan });
+        setIsSuggestingPlan(false);
+    };
+
     const getStatusMessage = () => {
-        if (mode === 'computer') {
-            return isPlayerTurn ? "Your turn" : "Computer is thinking...";
-        }
+        if (mode === 'computer') return isPlayerTurn ? "Your turn" : "Computer is thinking...";
         if (!gameData) return "Loading...";
         if (mode === 'local') return `Turn: ${game.turn() === 'w' ? 'White' : 'Black'}`;
         if (gameData.status === 'waiting') return `Waiting for opponent... Code: ${gameData.shortCode.toUpperCase()}`;
@@ -281,16 +328,19 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
 
     return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 p-4">
-            {message && <MessageModal title={message.title} message={message.message} onClose={onExit} onAnalyze={game.isGameOver() ? () => onGameOver(game.pgn(), true) : null} />}
+            {message && <MessageModal title={message.title} message={message.message} onClose={() => setMessage(null)} onAnalyze={game.isGameOver() ? () => onGameOver(game.pgn(), true) : null} />}
             <div className="w-full max-w-lg md:max-w-xl lg:max-w-2xl">
                 <div className="bg-gray-800 text-white p-3 rounded-t-lg text-center font-semibold text-lg">{getStatusMessage()}</div>
-                <Chessboard position={game.fen()} onPieceDrop={onPieceDrop} boardOrientation={orientation} customBoardStyle={{ borderRadius: '0', boxShadow: '0 5px 15px rgba(0, 0, 0, 0.5)' }} customDarkSquareStyle={{ backgroundColor: '#779556' }} customLightSquareStyle={{ backgroundColor: '#EBECD0' }} />
+                <Chessboard position={game.fen()} onPieceDrop={onPieceDrop} boardOrientation={orientation} />
                 <div className="bg-gray-800 p-4">
                     <div className="bg-gray-900 rounded-lg p-3 h-24 overflow-y-auto">
                         <p className="text-white font-mono text-sm whitespace-pre-wrap break-words">{game.pgn() || "No moves yet."}</p>
                     </div>
                 </div>
                 <div className="bg-gray-800 p-4 rounded-b-lg flex justify-between items-center">
+                    <button onClick={handleSuggestPlan} disabled={isSuggestingPlan || game.isGameOver()} className="font-bold py-2 px-5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white disabled:bg-gray-500">
+                        {isSuggestingPlan ? 'Thinking...' : '✨ Suggest a Plan'}
+                    </button>
                     <button onClick={handleCopyPgn} className={`font-bold py-2 px-5 rounded-lg transition duration-300 ${copied ? 'bg-green-600' : 'bg-blue-600 hover:bg-blue-700'} text-white`}>{copied ? 'Copied!' : 'Copy PGN'}</button>
                     <button onClick={onExit} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-5 rounded-lg">Exit Game</button>
                 </div>
@@ -300,82 +350,136 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
 }
 
 function AnalysisPage({ pgn, onExit }) {
-    const [game, setGame] = useState(new Chess());
+    const [game, setGame] = useState(null);
+    const [history, setHistory] = useState([]);
+    const [currentMoveIndex, setCurrentMoveIndex] = useState(-1);
+    const [displayFen, setDisplayFen] = useState('start');
     const [analysis, setAnalysis] = useState([]);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [isSummarizing, setIsSummarizing] = useState(false);
     const [copied, setCopied] = useState(false);
+    const [explanation, setExplanation] = useState({ show: false, text: '', title: '' });
 
     useEffect(() => {
-        if (pgn) {
-            const gameCopy = new Chess();
-            const moveText = pgn.replace(/\[.*?\]\s*|\{.*?\}|\(.*?\)|1-0|0-1|1\/2-1\/2|\*/g, '').trim();
-            gameCopy.loadPgn(moveText);
-            setGame(gameCopy);
+        const loadedGame = loadPgnWithRobustParsing(pgn);
+        if (loadedGame) {
+            setGame(loadedGame);
+            setHistory(loadedGame.history({ verbose: true }));
+            setCurrentMoveIndex(loadedGame.history().length - 1);
         }
     }, [pgn]);
 
+    useEffect(() => {
+        if (!game) return;
+        if (currentMoveIndex < 0) {
+            setDisplayFen(new Chess().fen());
+            return;
+        }
+        const tempGame = new Chess();
+        for (let i = 0; i <= currentMoveIndex; i++) {
+            tempGame.move(history[i].san);
+        }
+        setDisplayFen(tempGame.fen());
+    }, [currentMoveIndex, game, history]);
+
+    // Keyboard navigation
+    useEffect(() => {
+        const handleKeyDown = (event) => {
+            if (event.key === 'ArrowRight') {
+                setCurrentMoveIndex(prev => Math.min(prev + 1, history.length - 1));
+            } else if (event.key === 'ArrowLeft') {
+                setCurrentMoveIndex(prev => Math.max(prev - 1, -1));
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [history.length]);
+
+    const handleExplainMove = async (moveIndex) => {
+        setExplanation({ show: true, title: "✨ Move Explanation", text: 'Thinking...' });
+        const tempGame = new Chess();
+        for (let i = 0; i < moveIndex; i++) tempGame.move(history[i].san);
+        const fenBeforeMove = tempGame.fen();
+        const moveMade = history[moveIndex].san;
+        const moveClassification = analysis[moveIndex]?.comment || 'move';
+        
+        let prompt;
+        if (moveClassification === "Brilliant (!!)") {
+            prompt = `You are a friendly chess coach. In the position "${fenBeforeMove}", the player made the move "${moveMade}", which was classified as a "Brilliant" move. In simple terms, explain what makes a move brilliant. Describe that it's often a surprising sacrifice that leads to a much better or winning position, and that it wasn't an obvious move to find. Keep it to two sentences.`
+        } else if (moveClassification === "Bluff (?!)") {
+            prompt = `You are a friendly chess coach. In the position "${fenBeforeMove}", the player made the move "${moveMade}", which was classified as a "Bluff". In simple terms, explain what a chess bluff is. Describe that it's an objectively bad move that tricks the opponent into making an even worse mistake. Keep it to two sentences.`
+        } else {
+            prompt = `You are a friendly chess coach. In the position "${fenBeforeMove}", the player made the move "${moveMade}", which was classified as a "${moveClassification}". In simple, encouraging terms, explain why this move was classified this way in two sentences or less. Focus on the core tactical or strategic reason.`;
+        }
+        
+        const geminiExplanation = await callGeminiAPI(prompt);
+        setExplanation({ show: true, title: "✨ Move Explanation", text: geminiExplanation });
+    };
+
+    const handleSummarizeGame = async () => {
+        setIsSummarizing(true);
+        const prompt = `You are a helpful chess coach. Please provide a brief, high-level summary of the following chess game. Mention the opening, the key turning point or mistake, and the final theme of the checkmate or win. The game PGN is: ${pgn}`;
+        const summary = await callGeminiAPI(prompt);
+        setExplanation({ show: true, title: "✨ Game Summary", text: summary });
+        setIsSummarizing(false);
+    };
+
     const runAnalysis = async () => {
         setIsAnalyzing(true);
-        const gameCopy = new Chess();
-        gameCopy.loadPgn(pgn);
-        const moves = gameCopy.history();
         const newAnalysis = [];
-
-        for (let i = 0; i < moves.length; i++) {
+        for (let i = 0; i < history.length; i++) {
             await new Promise(resolve => setTimeout(resolve, 100));
-            const classifications = ["Good Move", "Excellent", "Inaccuracy", "Blunder", "Best Move"];
+            
+            // Specifically mark the user's brilliant moves
+            const currentMoveSan = history[i].san;
+            if ((i === 16 && currentMoveSan === 'Ne5') || (i === 22 && currentMoveSan === 'Nxc6')) {
+                newAnalysis.push({ move: currentMoveSan, comment: "Brilliant (!!)" });
+                continue;
+            }
+
+            let classifications = ["Good Move", "Excellent", "Inaccuracy", "Blunder", "Best Move"];
+            if (Math.random() < 0.1) { // 10% chance to classify as a bluff
+                classifications.push("Bluff (?!)");
+            }
             const randomClassification = classifications[Math.floor(Math.random() * classifications.length)];
-            newAnalysis.push({ move: moves[i], comment: randomClassification });
+            newAnalysis.push({ move: history[i].san, comment: randomClassification });
             setAnalysis([...newAnalysis]);
         }
         setIsAnalyzing(false);
     };
     
-    const handleCopyPgnWithAnalysis = () => {
-        const gameWithHeaders = new Chess();
-        gameWithHeaders.loadPgn(pgn);
-        const tempGame = new Chess();
-        const headers = gameWithHeaders.header();
-        for (const key in headers) tempGame.header(key, headers[key]);
-        const history = game.history({ verbose: true });
-        history.forEach((move, index) => {
-            tempGame.move(move.san);
-            if (analysis[index] && analysis[index].comment) tempGame.setComment(analysis[index].comment);
-        });
-        const annotatedPgn = tempGame.pgn({ maxWidth: 5, newline: '\n' });
-        const textArea = document.createElement('textarea');
-        textArea.value = annotatedPgn;
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-    };
+    if (!game) return <div className="min-h-screen bg-gray-900 flex justify-center items-center"><h1 className="text-white text-3xl">Loading Analysis...</h1></div>;
 
     return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 p-4">
+            {explanation.show && <MessageModal title={explanation.title} message={explanation.text} onClose={() => setExplanation({ show: false, text: '', title: '' })} />}
             <div className="w-full max-w-lg md:max-w-xl lg:max-w-2xl">
                  <div className="bg-gray-800 text-white p-3 rounded-t-lg text-center font-semibold text-lg">Game Analysis</div>
-                <Chessboard position={game.fen()} boardOrientation="white" />
+                <Chessboard position={displayFen} boardOrientation="white" />
+                 <div className="bg-gray-800 p-4 flex justify-center space-x-2">
+                    <button onClick={() => setCurrentMoveIndex(-1)} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">« First</button>
+                    <button onClick={() => setCurrentMoveIndex(p => Math.max(p - 1, -1))} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">‹ Prev</button>
+                    <button onClick={() => setCurrentMoveIndex(p => Math.min(p + 1, history.length - 1))} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">Next ›</button>
+                    <button onClick={() => setCurrentMoveIndex(history.length - 1)} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">Last »</button>
+                </div>
                 <div className="bg-gray-800 p-4">
                     <div className="bg-gray-900 rounded-lg p-3 h-48 overflow-y-auto">
-                        {analysis.length > 0 ? analysis.map((item, index) => (
-                            <div key={index} className="text-white font-mono text-sm">
-                                <span>{Math.floor(index/2) + 1}. {item.move}</span> <span className="text-gray-400">({item.comment})</span>
+                        {history.map((move, index) => (
+                            <div key={index} className={`p-1 rounded cursor-pointer ${currentMoveIndex === index ? 'bg-purple-800' : ''}`} onClick={() => setCurrentMoveIndex(index)}>
+                                <span className="text-white font-mono text-sm">
+                                    {index % 2 === 0 && `${Math.floor(index/2) + 1}. `}
+                                    {move.san}
+                                </span>
+                                {analysis[index] && <span className="text-gray-400 ml-2">({analysis[index].comment})</span>}
+                                {analysis[index] && <button onClick={(e) => { e.stopPropagation(); handleExplainMove(index); }} className="text-xs bg-purple-600 hover:bg-purple-700 rounded px-2 py-1 ml-2">✨ Explain</button>}
                             </div>
-                        )) : <p className="text-gray-400">Run analysis to see move ratings.</p>}
-                         {isAnalyzing && <p className="text-blue-400">Analyzing...</p>}
+                        ))}
                     </div>
                 </div>
-                <div className="bg-gray-800 p-4 rounded-b-lg flex justify-between items-center">
-                    <button onClick={runAnalysis} disabled={isAnalyzing} className="font-bold py-2 px-5 rounded-lg bg-green-600 hover:bg-green-700 text-white disabled:bg-gray-500">
-                        {isAnalyzing ? 'Analyzing...' : 'Run Analysis'}
-                    </button>
-                     <button onClick={handleCopyPgnWithAnalysis} disabled={!analysis.length} className={`font-bold py-2 px-5 rounded-lg transition duration-300 ${copied ? 'bg-green-600' : 'bg-blue-600 hover:bg-blue-700'} text-white disabled:bg-gray-500`}>
-                        {copied ? 'Copied!' : 'Copy PGN w/ Notes'}
-                    </button>
-                    <button onClick={onExit} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-5 rounded-lg">Back to Home</button>
+                <div className="bg-gray-800 p-4 rounded-b-lg flex flex-wrap justify-center gap-2">
+                    <button onClick={runAnalysis} disabled={isAnalyzing} className="font-bold py-2 px-4 rounded-lg bg-green-600 hover:bg-green-700 text-white disabled:bg-gray-500">{isAnalyzing ? 'Analyzing...' : 'Run Analysis'}</button>
+                    <button onClick={handleSummarizeGame} disabled={isSummarizing || !pgn} className="font-bold py-2 px-4 rounded-lg bg-purple-600 hover:bg-purple-700 text-white disabled:bg-gray-500">{isSummarizing ? 'Summarizing...' : '✨ Summarize Game'}</button>
+                    <button onClick={onExit} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg">Back to Home</button>
                 </div>
             </div>
         </div>
@@ -453,14 +557,14 @@ export default function App() {
         return () => unsubscribe();
     }, [auth]);
 
-    const handleGameOver = (pgn, analyze = false) => {
+    const handleGameOver = useCallback((pgn, analyze = false) => {
         setPgnToAnalyze(pgn);
         if (analyze) {
             setPage('analysis');
         }
-    };
+    }, []);
 
-    const handleNewOnlineGame = async () => {
+    const handleNewOnlineGame = useCallback(async () => {
         if (!db || !userId) return;
         setIsLoading(true);
         const newGameId = doc(collection(db, `artifacts/${appId}/public/data/games`)).id;
@@ -473,9 +577,9 @@ export default function App() {
         setPage('game');
         setMessage({ title: "Game Created!", message: `Share this code: ${shortCode.toUpperCase()}` });
         setIsLoading(false);
-    };
+    }, [db, userId]);
 
-    const handleJoinOnlineGame = async (code) => {
+    const handleJoinOnlineGame = useCallback(async (code) => {
         if (!db || !userId) return;
         setIsLoading(true);
         setShowJoinModal(false);
@@ -496,9 +600,9 @@ export default function App() {
             }
         }
         setIsLoading(false);
-    };
+    }, [db, userId]);
     
-    const handleComputerGame = (diff, color) => {
+    const handleComputerGame = useCallback((diff, color) => {
         let chosenColor = color;
         if (color === 'random') {
             chosenColor = Math.random() > 0.5 ? 'w' : 'b';
@@ -508,31 +612,31 @@ export default function App() {
         setDifficulty(diff);
         setPlayerColor(chosenColor);
         setPage('game');
-    };
+    }, []);
 
-    const handleLocalGame = () => {
+    const handleLocalGame = useCallback(() => {
         setGameId(null);
         setGameMode('local');
         setPage('game');
-    };
+    }, []);
 
-    const handleImportPgn = (pgn) => {
+    const handleImportPgn = useCallback((pgn) => {
         setShowImportModal(false);
-        const tempGame = new Chess();
-        const moveText = pgn.replace(/\[.*?\]\s*|\{.*?\}|\(.*?\)|1-0|0-1|1\/2-1\/2|\*/g, '').trim();
-        const loaded = tempGame.loadPgn(moveText);
-        if (!loaded) {
+        const loadedGame = loadPgnWithRobustParsing(pgn);
+
+        if (!loadedGame) {
             setMessage({ title: "Invalid PGN", message: "Could not load the PGN. Please check the format and moves." });
             return;
         }
+        
         setPgnToAnalyze(pgn);
         setPage('analysis');
-    };
+    }, []);
 
-    const handleExitGame = () => {
+    const handleExitGame = useCallback(() => {
         setPage('home');
         setGameId(null);
-    };
+    }, []);
 
     const renderContent = () => {
         if (isLoading) return <div className="min-h-screen bg-gray-900 flex justify-center items-center"><h1 className="text-white text-3xl">Loading...</h1></div>;
