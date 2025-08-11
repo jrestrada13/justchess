@@ -16,29 +16,6 @@ import {
     serverTimestamp
 } from 'firebase/firestore';
 
-// --- Stockfish Integration Placeholder ---
-const stockfish = {
-    postMessage: (command) => {
-        console.log(`Stockfish command: ${command}`);
-        if (command.startsWith('go')) {
-            setTimeout(() => {
-                if (stockfish.onmessage) {
-                    const game = new Chess(stockfish._currentFen);
-                    const moves = game.moves({ verbose: true });
-                    if (moves.length > 0) {
-                        const bestMove = moves[Math.floor(Math.random() * moves.length)];
-                        stockfish.onmessage({ data: `bestmove ${bestMove.from}${bestMove.to}` });
-                    }
-                }
-            }, 1000);
-        } else if (command.startsWith('position fen')) {
-            stockfish._currentFen = command.substring(13);
-        }
-    },
-    onmessage: null,
-    _currentFen: '',
-};
-
 // --- Firebase Configuration ---
 const firebaseConfig = {
   apiKey: "AIzaSyD6gCgxx3NpDCr_4iqQfRg9jNNTljOcIq4",
@@ -56,43 +33,6 @@ const generateShortCode = (length = 6) => {
     let result = '';
     for (let i = 0; i < length; i++) result += chars.charAt(Math.floor(Math.random() * chars.length));
     return result;
-};
-
-// --- Gemini API Helper ---
-const callGeminiAPI = async (prompt) => {
-    // Your Gemini API key is now included.
-    const apiKey = "AIzaSyC24luvljlvWXKhjgjq6XcR1-6ZPUKWpbw"; 
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
-    
-    const payload = {
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-    };
-
-    try {
-        if (apiKey === "YOUR_GEMINI_API_KEY_HERE" || apiKey === "") {
-            return "Error: No Gemini API key found. Please add your key to the App.jsx file.";
-        }
-        const response = await fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        if (!response.ok) {
-            // Provide a more helpful error message for API key issues.
-            if (response.status === 400) {
-                 return "Error: The Gemini API key is invalid or not configured correctly in your Google Cloud project. Please check for restrictions and ensure the Generative Language API is enabled.";
-            }
-            throw new Error(`API call failed with status: ${response.status}`);
-        }
-        const result = await response.json();
-        if (result.candidates && result.candidates.length > 0 && result.candidates[0].content.parts.length > 0) {
-            return result.candidates[0].content.parts[0].text;
-        }
-        return "Sorry, I couldn't generate a response.";
-    } catch (error) {
-        console.error("Gemini API call failed:", error);
-        return `An error occurred while contacting the AI assistant: ${error.message}`;
-    }
 };
 
 // --- Robust PGN Loader ---
@@ -203,57 +143,13 @@ function ImportPgnModal({ onImport, onClose }) {
     );
 }
 
-function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerColor = 'w', onGameOver }) {
+function GamePage({ gameId, mode, userId, db, onExit, onGameOver }) {
     const [game, setGame] = useState(new Chess());
     const [gameData, setGameData] = useState(null);
     const [orientation, setOrientation] = useState('white');
     const [message, setMessage] = useState(null);
     const [copied, setCopied] = useState(false);
-    const [isSuggestingPlan, setIsSuggestingPlan] = useState(false);
     
-    const computerColor = useMemo(() => playerColor === 'w' ? 'b' : 'w', [playerColor]);
-
-    // Setup engine and make first move if computer is white
-    useEffect(() => {
-        if (mode === 'computer') {
-            setOrientation(playerColor === 'w' ? 'white' : 'black');
-            stockfish.onmessage = (event) => {
-                const message = event.data || event;
-                if (message.startsWith('bestmove')) {
-                    const moveStr = message.split(' ')[1];
-                    if (moveStr) {
-                        setGame((g) => {
-                            const gameCopy = new Chess();
-                            gameCopy.loadPgn(g.pgn());
-                            const from = moveStr.substring(0, 2);
-                            const to = moveStr.substring(2, 4);
-                            const promotion = moveStr.length > 4 ? moveStr.substring(4, 5) : undefined;
-                            const moveResult = gameCopy.move({ from, to, promotion });
-                            return moveResult ? gameCopy : g;
-                        });
-                    }
-                }
-            };
-            stockfish.postMessage('uci');
-            stockfish.postMessage('isready');
-            stockfish.postMessage(`setoption name Skill Level value ${difficulty}`);
-            
-            if (computerColor === 'w') {
-                const newGame = new Chess();
-                stockfish.postMessage(`position fen ${newGame.fen()}`);
-                stockfish.postMessage('go depth 15');
-            }
-        }
-    }, [mode, difficulty, playerColor, computerColor]);
-
-    // Trigger computer's subsequent moves
-    useEffect(() => {
-        if (mode === 'computer' && game.turn() === computerColor && !game.isGameOver()) {
-            stockfish.postMessage(`position fen ${game.fen()}`);
-            stockfish.postMessage('go depth 15');
-        }
-    }, [game, mode, computerColor]);
-
     useEffect(() => {
         if (game.isGameOver()) {
             let title = "Game Over";
@@ -268,13 +164,12 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
     const isPlayerTurn = useMemo(() => {
         if (game.isGameOver()) return false;
         if (mode === 'local') return true;
-        if (mode === 'computer') return game.turn() === playerColor;
         if (mode === 'online' && gameData) {
             const onlinePlayerColor = gameData.playerWhite === userId ? 'w' : 'b';
             return game.turn() === onlinePlayerColor;
         }
         return false;
-    }, [game, gameData, userId, mode, playerColor]);
+    }, [game, gameData, userId, mode]);
 
     useEffect(() => {
         if (mode !== 'online' || !gameId || !db) return;
@@ -283,7 +178,12 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
             if (docSnap.exists()) {
                 const data = docSnap.data();
                 const newGame = new Chess();
-                newGame.loadPgn(data.pgn || data.fen);
+                // Correctly load from PGN if it exists, otherwise load from FEN
+                if (data.pgn && data.pgn.trim() !== '') {
+                    newGame.loadPgn(data.pgn);
+                } else {
+                    newGame.load(data.fen); // Use .load() for FEN strings
+                }
                 setGameData(data);
                 setGame(newGame);
                 if (data.playerWhite === userId) setOrientation('white');
@@ -296,7 +196,7 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
     }, [gameId, mode, db, userId]);
 
     useEffect(() => {
-        if (mode === 'local' || mode === 'computer') {
+        if (mode === 'local') {
             setGameData({ status: 'active' });
         }
     }, [mode]);
@@ -333,17 +233,7 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
         document.body.removeChild(textArea);
     };
 
-    const handleSuggestPlan = async () => {
-        setIsSuggestingPlan(true);
-        const turn = game.turn() === 'w' ? 'White' : 'Black';
-        const prompt = `You are a friendly chess coach. Given the following chess position in FEN notation, suggest a simple, strategic plan for ${turn}. Focus on 1-2 key ideas. FEN: ${game.fen()}`;
-        const plan = await callGeminiAPI(prompt);
-        setMessage({ title: "✨ Strategic Plan", message: plan });
-        setIsSuggestingPlan(false);
-    };
-
     const getStatusMessage = () => {
-        if (mode === 'computer') return isPlayerTurn ? "Your turn" : "Computer is thinking...";
         if (!gameData) return "Loading...";
         if (mode === 'local') return `Turn: ${game.turn() === 'w' ? 'White' : 'Black'}`;
         if (gameData.status === 'waiting') return `Waiting for opponent... Code: ${gameData.shortCode.toUpperCase()}`;
@@ -381,9 +271,6 @@ function GamePage({ gameId, mode, userId, db, onExit, difficulty = 10, playerCol
                     </div>
 
                     <div className="bg-gray-800 p-4 rounded-b-lg flex justify-between items-center">
-                        <button onClick={handleSuggestPlan} disabled={isSuggestingPlan || game.isGameOver()} className="font-bold py-2 px-5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white disabled:bg-gray-500">
-                            {isSuggestingPlan ? 'Thinking...' : '✨ Suggest a Plan'}
-                        </button>
                         <button onClick={handleCopyPgn} className={`font-bold py-2 px-5 rounded-lg transition duration-300 ${copied ? 'bg-green-600' : 'bg-blue-600 hover:bg-blue-700'} text-white`}>{copied ? 'Copied!' : 'Copy PGN'}</button>
                         <button onClick={onExit} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-5 rounded-lg">Exit Game</button>
                     </div>
@@ -398,10 +285,6 @@ function AnalysisPage({ pgn, onExit }) {
     const [history, setHistory] = useState([]);
     const [currentMoveIndex, setCurrentMoveIndex] = useState(-1);
     const [displayFen, setDisplayFen] = useState('start');
-    const [analysis, setAnalysis] = useState([]);
-    const [isAnalyzing, setIsAnalyzing] = useState(false);
-    const [isSummarizing, setIsSummarizing] = useState(false);
-    const [explanation, setExplanation] = useState({ show: false, text: '', title: '' });
 
     useEffect(() => {
         const loadedGame = loadPgnWithRobustParsing(pgn);
@@ -437,60 +320,11 @@ function AnalysisPage({ pgn, onExit }) {
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [history.length]);
-
-    const handleExplainMove = async (moveIndex) => {
-        setExplanation({ show: true, title: "✨ Move Explanation", text: 'Thinking...' });
-        const tempGame = new Chess();
-        for (let i = 0; i < moveIndex; i++) tempGame.move(history[i].san);
-        const fenBeforeMove = tempGame.fen();
-        const moveMade = history[moveIndex].san;
-        const moveClassification = analysis[moveIndex]?.comment || 'move';
-        
-        let prompt;
-        if (moveClassification === "Brilliant (!!)") {
-            prompt = `You are a friendly chess coach. In the position "${fenBeforeMove}", the player made the move "${moveMade}", which was classified as a "Brilliant" move. In simple terms, explain what makes a move brilliant. Describe that it's often a surprising sacrifice that leads to a much better or winning position, and that it wasn't an obvious move to find. Keep it to two sentences.`
-        } else if (moveClassification === "Bluff (?!)") {
-            prompt = `You are a friendly chess coach. In the position "${fenBeforeMove}", the player made the move "${moveMade}", which was classified as a "Bluff". In simple terms, explain what a chess bluff is. Describe that it's an objectively bad move that tricks the opponent into making an even worse mistake. Keep it to two sentences.`
-        } else {
-            prompt = `You are a friendly chess coach. In the position "${fenBeforeMove}", the player made the move "${moveMade}", which was classified as a "${moveClassification}". In simple, encouraging terms, explain why this move was classified this way in two sentences or less. Focus on the core tactical or strategic reason.`;
-        }
-        
-        const geminiExplanation = await callGeminiAPI(prompt);
-        setExplanation({ show: true, title: "✨ Move Explanation", text: geminiExplanation });
-    };
-
-    const handleSummarizeGame = async () => {
-        setIsSummarizing(true);
-        const prompt = `You are a helpful chess coach. Please provide a brief, high-level summary of the following chess game. Mention the opening, the key turning point or mistake, and the final theme of the checkmate or win. The game PGN is: ${pgn}`;
-        const summary = await callGeminiAPI(prompt);
-        setExplanation({ show: true, title: "✨ Game Summary", text: summary });
-        setIsSummarizing(false);
-    };
-
-    const runAnalysis = async () => {
-        setIsAnalyzing(true);
-        const newAnalysis = [];
-        for (let i = 0; i < history.length; i++) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-            const currentMoveSan = history[i].san;
-            if ((i === 16 && currentMoveSan === 'Ne5') || (i === 22 && currentMoveSan === 'Nxc6')) {
-                newAnalysis.push({ move: currentMoveSan, comment: "Brilliant (!!)" });
-                continue;
-            }
-            let classifications = ["Good Move", "Excellent", "Inaccuracy", "Blunder", "Best Move"];
-            if (Math.random() < 0.1) classifications.push("Bluff (?!)");
-            const randomClassification = classifications[Math.floor(Math.random() * classifications.length)];
-            newAnalysis.push({ move: history[i].san, comment: randomClassification });
-        }
-        setAnalysis(newAnalysis);
-        setIsAnalyzing(false);
-    };
     
     if (!game) return <div className="min-h-screen bg-gray-900 flex justify-center items-center"><h1 className="text-white text-3xl">Loading Analysis...</h1></div>;
 
     return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 p-4">
-            {explanation.show && <MessageModal title={explanation.title} message={explanation.text} onClose={() => setExplanation({ show: false, text: '', title: '' })} />}
             <div className="w-full max-w-7xl mx-auto flex flex-col lg:flex-row gap-4">
                 {/* PGN Tracker - Side (Desktop) */}
                 <div className="hidden lg:block w-72 bg-gray-800 p-4 rounded-lg">
@@ -502,8 +336,6 @@ function AnalysisPage({ pgn, onExit }) {
                                     {index % 2 === 0 && `${Math.floor(index/2) + 1}. `}
                                     {move.san}
                                 </span>
-                                {analysis[index] && <span className="text-gray-400 ml-2">({analysis[index].comment})</span>}
-                                {analysis[index] && <button onClick={(e) => { e.stopPropagation(); handleExplainMove(index); }} className="text-xs bg-purple-600 hover:bg-purple-700 rounded px-2 py-1 ml-2">✨ Explain</button>}
                             </div>
                         ))}
                     </div>
@@ -528,15 +360,11 @@ function AnalysisPage({ pgn, onExit }) {
                                         {index % 2 === 0 && `${Math.floor(index/2) + 1}. `}
                                         {move.san}
                                     </span>
-                                    {analysis[index] && <span className="text-gray-400 ml-2">({analysis[index].comment})</span>}
-                                    {analysis[index] && <button onClick={(e) => { e.stopPropagation(); handleExplainMove(index); }} className="text-xs bg-purple-600 hover:bg-purple-700 rounded px-2 py-1 ml-2">✨ Explain</button>}
                                 </div>
                             ))}
                         </div>
                     </div>
                     <div className="bg-gray-800 p-4 rounded-b-lg flex flex-wrap justify-center gap-2">
-                        <button onClick={runAnalysis} disabled={isAnalyzing} className="font-bold py-2 px-4 rounded-lg bg-green-600 hover:bg-green-700 text-white disabled:bg-gray-500">{isAnalyzing ? 'Analyzing...' : 'Run Analysis'}</button>
-                        <button onClick={handleSummarizeGame} disabled={isSummarizing || !pgn} className="font-bold py-2 px-4 rounded-lg bg-purple-600 hover:bg-purple-700 text-white disabled:bg-gray-500">{isSummarizing ? 'Summarizing...' : '✨ Summarize Game'}</button>
                         <button onClick={onExit} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg">Back to Home</button>
                     </div>
                 </div>
@@ -545,9 +373,8 @@ function AnalysisPage({ pgn, onExit }) {
     );
 }
 
-function HomePage({ onNewGame, onJoinGame, onLocalGame, onComputerGame, onImportGame }) {
-    const [difficulty, setDifficulty] = useState(10);
-    const [playerColor, setPlayerColor] = useState('random');
+function HomePage({ onNewGame, onJoinGame, onLocalGame, onImportGame }) {
+    const [onlinePlayerColor, setOnlinePlayerColor] = useState('random');
 
     return (
         <div className="min-h-screen bg-gray-900 flex flex-col justify-center items-center text-white p-4">
@@ -556,25 +383,20 @@ function HomePage({ onNewGame, onJoinGame, onLocalGame, onComputerGame, onImport
                 <p className="text-xl text-gray-400">No accounts. No hassle. Just chess.</p>
             </div>
             <div className="w-full max-w-sm space-y-5">
-                <button onClick={onNewGame} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-4 rounded-lg text-xl shadow-lg">Create Online Game</button>
-                <button onClick={onJoinGame} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-4 rounded-lg text-xl shadow-lg">Join with Code</button>
-                <button onClick={onLocalGame} className="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-4 px-4 rounded-lg text-xl shadow-lg">Play Over The Table</button>
-                <button onClick={onImportGame} className="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-4 px-4 rounded-lg text-xl shadow-lg">Import PGN</button>
-                
                 <div className="bg-gray-800 p-4 rounded-lg">
                     <div className="text-center mb-4">
                         <p className="text-lg font-medium text-gray-300 mb-2">Play as:</p>
                         <div className="inline-flex rounded-md shadow-sm" role="group">
-                            <button onClick={() => setPlayerColor('w')} type="button" className={`px-4 py-2 text-sm font-medium rounded-l-lg ${playerColor === 'w' ? 'bg-purple-800 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>White</button>
-                            <button onClick={() => setPlayerColor('random')} type="button" className={`px-4 py-2 text-sm font-medium ${playerColor === 'random' ? 'bg-purple-800 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>Random</button>
-                            <button onClick={() => setPlayerColor('b')} type="button" className={`px-4 py-2 text-sm font-medium rounded-r-lg ${playerColor === 'b' ? 'bg-purple-800 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>Black</button>
+                            <button onClick={() => setOnlinePlayerColor('w')} type="button" className={`px-4 py-2 text-sm font-medium rounded-l-lg ${onlinePlayerColor === 'w' ? 'bg-blue-800 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>White</button>
+                            <button onClick={() => setOnlinePlayerColor('random')} type="button" className={`px-4 py-2 text-sm font-medium ${onlinePlayerColor === 'random' ? 'bg-blue-800 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>Random</button>
+                            <button onClick={() => setOnlinePlayerColor('b')} type="button" className={`px-4 py-2 text-sm font-medium rounded-r-lg ${onlinePlayerColor === 'b' ? 'bg-blue-800 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>Black</button>
                         </div>
                     </div>
-                    <label htmlFor="difficulty" className="block text-center text-lg font-medium text-gray-300 mb-2">Computer Difficulty</label>
-                    <input type="range" id="difficulty" min="0" max="20" value={difficulty} onChange={(e) => setDifficulty(e.target.value)} className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer" />
-                    <div className="text-center text-gray-400 mt-1">Skill Level: {difficulty}</div>
-                    <button onClick={() => onComputerGame(difficulty, playerColor)} className="w-full mt-4 bg-purple-600 hover:bg-purple-700 text-white font-bold py-4 px-4 rounded-lg text-xl shadow-lg">Play vs. Computer</button>
+                    <button onClick={() => onNewGame(onlinePlayerColor)} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-4 rounded-lg text-xl shadow-lg">Create Online Game</button>
                 </div>
+                <button onClick={onJoinGame} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-4 rounded-lg text-xl shadow-lg">Join with Code</button>
+                <button onClick={onLocalGame} className="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-4 px-4 rounded-lg text-xl shadow-lg">Play Over The Table</button>
+                <button onClick={onImportGame} className="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-4 px-4 rounded-lg text-xl shadow-lg">Import PGN</button>
             </div>
         </div>
     );
@@ -584,8 +406,6 @@ export default function App() {
     const [page, setPage] = useState('home');
     const [gameId, setGameId] = useState(null);
     const [gameMode, setGameMode] = useState('local');
-    const [difficulty, setDifficulty] = useState(10);
-    const [playerColor, setPlayerColor] = useState('w');
     const [pgnToAnalyze, setPgnToAnalyze] = useState('');
     const [showJoinModal, setShowJoinModal] = useState(false);
     const [showImportModal, setShowImportModal] = useState(false);
@@ -623,18 +443,35 @@ export default function App() {
         }
     }, []);
 
-    const handleNewOnlineGame = useCallback(async () => {
+    const handleNewOnlineGame = useCallback(async (color) => {
         if (!db || !userId) return;
         setIsLoading(true);
         const newGameId = doc(collection(db, `artifacts/${appId}/public/data/games`)).id;
         const shortCode = generateShortCode();
         const gameRef = doc(db, `artifacts/${appId}/public/data/games`, newGameId);
-        const initialGame = { fen: new Chess().fen(), pgn: '', shortCode, playerWhite: userId, playerBlack: null, status: 'waiting', createdAt: serverTimestamp() };
+        
+        let chosenColor = color;
+        if (color === 'random') {
+            chosenColor = Math.random() > 0.5 ? 'w' : 'b';
+        }
+
+        const initialGame = { 
+            fen: new Chess().fen(), 
+            pgn: '', 
+            shortCode, 
+            playerWhite: chosenColor === 'w' ? userId : null, 
+            playerBlack: chosenColor === 'b' ? userId : null, 
+            status: 'waiting', 
+            createdAt: serverTimestamp() 
+        };
         await setDoc(gameRef, initialGame);
         setGameId(newGameId);
         setGameMode('online');
         setPage('game');
-        setMessage({ title: "Game Created!", message: `Share this code: ${shortCode.toUpperCase()}` });
+        setMessage({ title: "Game Created!", message: `Share this code: ${shortCode.toUpperCase()}`, onShare: (data) => {
+            const url = `${window.location.origin}?gameId=${data.gameId}`;
+            navigator.clipboard.writeText(url);
+        }, shareData: { gameId: newGameId } });
         setIsLoading(false);
     }, [db, userId]);
 
@@ -649,10 +486,17 @@ export default function App() {
             setMessage({ title: "Not Found", message: "No waiting game with that code." });
         } else {
             const gameDoc = querySnapshot.docs[0];
-            if (gameDoc.data().playerWhite === userId) {
+            const gameData = gameDoc.data();
+            if (gameData.playerWhite === userId || gameData.playerBlack === userId) {
                 setMessage({ title: "Oops!", message: "You can't join your own game." });
             } else {
-                await updateDoc(doc(db, `artifacts/${appId}/public/data/games`, gameDoc.id), { playerBlack: userId, status: 'active' });
+                const updates = { status: 'active' };
+                if (gameData.playerWhite === null) {
+                    updates.playerWhite = userId;
+                } else {
+                    updates.playerBlack = userId;
+                }
+                await updateDoc(doc(db, `artifacts/${appId}/public/data/games`, gameDoc.id), updates);
                 setGameId(gameDoc.id);
                 setGameMode('online');
                 setPage('game');
@@ -661,18 +505,6 @@ export default function App() {
         setIsLoading(false);
     }, [db, userId]);
     
-    const handleComputerGame = useCallback((diff, color) => {
-        let chosenColor = color;
-        if (color === 'random') {
-            chosenColor = Math.random() > 0.5 ? 'w' : 'b';
-        }
-        setGameId(null);
-        setGameMode('computer');
-        setDifficulty(diff);
-        setPlayerColor(chosenColor);
-        setPage('game');
-    }, []);
-
     const handleLocalGame = useCallback(() => {
         setGameId(null);
         setGameMode('local');
@@ -701,20 +533,17 @@ export default function App() {
         if (isLoading) return <div className="min-h-screen bg-gray-900 flex justify-center items-center"><h1 className="text-white text-3xl">Loading...</h1></div>;
         switch (page) {
             case 'game':
-                return <GamePage gameId={gameId} mode={gameMode} userId={userId} db={db} onExit={handleExitGame} difficulty={difficulty} playerColor={playerColor} onGameOver={handleGameOver} />;
+                return <GamePage gameId={gameId} mode={gameMode} userId={userId} db={db} onExit={handleExitGame} onGameOver={handleGameOver} />;
             case 'analysis':
                 return <AnalysisPage pgn={pgnToAnalyze} onExit={handleExitGame} />;
             default:
-                return <HomePage onNewGame={handleNewOnlineGame} onJoinGame={() => setShowJoinModal(true)} onLocalGame={handleLocalGame} onComputerGame={handleComputerGame} onImportGame={() => setShowImportModal(true)} />;
+                return <HomePage onNewGame={handleNewOnlineGame} onJoinGame={() => setShowJoinModal(true)} onLocalGame={handleLocalGame} onImportGame={() => setShowImportModal(true)} />;
         }
     };
 
     return (
         <>
-            {message && <MessageModal title={message.title} message={message.message} onClose={() => setMessage(null)} onShare={(data) => {
-                const url = `${window.location.href.split('?')[0]}?gameId=${data.gameId}`;
-                navigator.clipboard.writeText(url);
-            }} shareData={page === 'game' && gameMode === 'online' ? { gameId } : null} />}
+            {message && <MessageModal title={message.title} message={message.message} onClose={() => setMessage(null)} onShare={message.onShare} shareData={message.shareData} />}
             {showJoinModal && <JoinModal onJoin={handleJoinOnlineGame} onClose={() => setShowJoinModal(false)} />}
             {showImportModal && <ImportPgnModal onImport={handleImportPgn} onClose={() => setShowImportModal(false)} />}
             {renderContent()}
