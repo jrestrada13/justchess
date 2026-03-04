@@ -17,15 +17,18 @@ import {
 } from 'firebase/firestore';
 
 // --- Firebase Configuration ---
+// Keys are loaded from environment variables — never hardcode these in source.
+// Set them in Netlify: Site Settings → Environment Variables
+// For local dev, create a .env file in the project root (already in .gitignore)
 const firebaseConfig = {
-  apiKey: "AIzaSyD6gCgxx3NpDCr_4iqQfRg9jNNTljOcIq4",
-  authDomain: "justchess-6afd3.firebaseapp.com",
-  projectId: "justchess-6afd3",
-  storageBucket: "justchess-6afd3.appspot.com",
-  messagingSenderId: "890708766145",
-  appId: "1:890708766145:web:d9140f62a58068d8181340"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
-const appId = 'justchess-6afd3';
+const appId = import.meta.env.VITE_APP_ID;
 
 // --- Helper Functions ---
 const generateShortCode = (length = 6) => {
