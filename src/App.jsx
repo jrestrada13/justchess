@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Chess } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { 
     getFirestore, 
     doc, 
@@ -18,12 +18,12 @@ import {
 
 // --- Firebase Configuration ---
 const firebaseConfig = {
-  apiKey: "AIzaSyD6gCgxx3NpDCr_4iqQfRg9jNNTljOcIq4",
-  authDomain: "justchess-6afd3.firebaseapp.com",
-  projectId: "justchess-6afd3",
-  storageBucket: "justchess-6afd3.appspot.com",
-  messagingSenderId: "890708766145",
-  appId: "1:890708766145:web:d9140f62a58068d8181340"
+  apiKey: "AIzaSyD6gCgxx3NpDCr_4iqQfRg9jNNTljOcIq4",
+  authDomain: "justchess-6afd3.firebaseapp.com",
+  projectId: "justchess-6afd3",
+  storageBucket: "justchess-6afd3.appspot.com",
+  messagingSenderId: "890708766145",
+  appId: "1:890708766145:web:d9140f62a58068d8181340"
 };
 const appId = 'justchess-6afd3';
 
@@ -35,32 +35,85 @@ const generateShortCode = (length = 6) => {
     return result;
 };
 
+// --- Responsive Board Size Hook ---
+function useBoardSize() {
+    const [boardSize, setBoardSize] = useState(480);
+    useEffect(() => {
+        function calculate() {
+            const padding = 48; // account for page padding
+            const sidebarWidth = window.innerWidth >= 1024 ? 288 + 16 : 0; // w-72 + gap on desktop
+            const controlsHeight = 160; // status bar + button bar + some breathing room
+            const availableWidth = window.innerWidth - padding - sidebarWidth;
+            const availableHeight = window.innerHeight - controlsHeight;
+            const size = Math.floor(Math.min(availableWidth, availableHeight, 600));
+            setBoardSize(Math.max(size, 280)); // minimum 280px
+        }
+        calculate();
+        window.addEventListener('resize', calculate);
+        return () => window.removeEventListener('resize', calculate);
+    }, []);
+    return boardSize;
+}
+
 // --- Robust PGN Loader ---
 const loadPgnWithRobustParsing = (pgnString) => {
-    const game = new Chess();
-    if (game.loadPgn(pgnString)) {
-        return game;
-    }
-    const pgnWithoutHeaders = pgnString.replace(/\[.*?\]\s*/g, '');
+    if (!pgnString || pgnString.trim() === '') return null;
+
+    // Normalize: replace Unicode quotes, curly quotes, and non-breaking spaces
+    const normalize = (s) => s
+        .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+        .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+        .replace(/\u00A0/g, ' ')
+        .replace(/\r\n/g, '\n')
+        .trim();
+
+    const cleaned = normalize(pgnString);
+
+    // Attempt 1: direct load
+    const game1 = new Chess();
+    try { if (game1.loadPgn(cleaned)) return game1; } catch {}
+
+    // Attempt 2: strip headers
+    const noHeaders = cleaned.replace(/\[.*?\]\s*/gs, '').trim();
     const game2 = new Chess();
-    if (game2.loadPgn(pgnWithoutHeaders)) {
-        return game2;
-    }
-    const moveText = pgnString
-        .replace(/\[.*?\]\s*|\{.*?\}|\(.*?\)|1-0|0-1|1\/2-1\/2|\*|\d+\.{1,3}\s*/g, '')
+    try { if (game2.loadPgn(noHeaders)) return game2; } catch {}
+
+    // Attempt 3: strip everything except moves, handle all move number formats
+    // Handles: 1. 1... 1.. e4, {comments}, (variations), result tokens
+    const moveText = cleaned
+        .replace(/\[.*?\]\s*/gs, '')       // headers
+        .replace(/\{[^}]*\}/g, '')          // inline comments
+        .replace(/\([^)]*\)/g, '')          // variations
+        .replace(/1-0|0-1|1\/2-1\/2|\*/g, '') // results
+        .replace(/\d+\.{1,3}\s*/g, '')      // move numbers (1. 1... 1..)
         .replace(/\s+/g, ' ')
         .trim();
-    const moves = moveText.split(' ');
-    const finalGame = new Chess();
+
+    const moves = moveText.split(' ').filter(m => m.trim() !== '');
+    const game3 = new Chess();
     try {
         for (const move of moves) {
-            if (move.trim() === '') continue;
-            if (finalGame.move(move) === null) return null;
+            // Skip anything that looks like a leftover token
+            if (/^[\d\.\*]/.test(move)) continue;
+            if (game3.move(move) === null) return null;
         }
-        return finalGame;
-    } catch (e) {
-        return null;
-    }
+        if (game3.history().length > 0) return game3;
+    } catch {}
+
+    // Attempt 4: try each move with lax SAN matching
+    const game4 = new Chess();
+    try {
+        for (const move of moves) {
+            if (/^[\d\.\*]/.test(move)) continue;
+            try {
+                const result = game4.move(move, { strict: false });
+                if (result === null) return null;
+            } catch { return null; }
+        }
+        if (game4.history().length > 0) return game4;
+    } catch {}
+
+    return null;
 };
 
 
@@ -68,13 +121,11 @@ const loadPgnWithRobustParsing = (pgnString) => {
 
 function MessageModal({ title, message, onClose, onAnalyze, onShare, shareData }) {
     const [copied, setCopied] = useState(false);
-
     const handleShare = () => {
         onShare(shareData);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
     };
-
     return (
         <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50">
             <div className="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm mx-4 text-center">
@@ -82,7 +133,7 @@ function MessageModal({ title, message, onClose, onAnalyze, onShare, shareData }
                 <p className="text-gray-300 mb-6 whitespace-pre-wrap">{message}</p>
                 <div className="flex flex-col space-y-3">
                     {onAnalyze && (
-                         <button onClick={onAnalyze} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg">Analyze Game</button>
+                        <button onClick={onAnalyze} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg">Analyze Game</button>
                     )}
                     {onShare && (
                         <button onClick={handleShare} className={`w-full font-bold py-3 px-4 rounded-lg transition-colors ${copied ? 'bg-green-600' : 'bg-purple-600 hover:bg-purple-700'} text-white`}>
@@ -122,19 +173,22 @@ function ImportPgnModal({ onImport, onClose }) {
     const [pgn, setPgn] = useState('');
     const [error, setError] = useState('');
     const handleImport = () => {
-        if (pgn.trim() === '') {
-            setError('Please paste a PGN string.');
-            return;
-        }
+        if (pgn.trim() === '') { setError('Please paste a PGN string.'); return; }
         onImport(pgn);
     };
     return (
         <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50">
             <div className="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md mx-4">
-                <h3 className="text-2xl font-bold text-white mb-4 text-center">Import PGN</h3>
-                <textarea value={pgn} onChange={(e) => { setPgn(e.target.value); setError(''); }} placeholder="[Event &quot;?&quot;]..." className="w-full bg-gray-700 text-white border-2 border-gray-600 rounded-lg p-3 h-48 font-mono text-sm" />
+                <h3 className="text-2xl font-bold text-white mb-2 text-center">Import PGN</h3>
+                <p className="text-gray-400 text-sm text-center mb-4">Paste PGN from Chess.com, Lichess, or any standard export.</p>
+                <textarea
+                    value={pgn}
+                    onChange={(e) => { setPgn(e.target.value); setError(''); }}
+                    placeholder={'[Event "?"]\n[White "Player1"]\n[Black "Player2"]\n\n1. e4 e5 2. Nf3 Nc6 ...'}
+                    className="w-full bg-gray-700 text-white border-2 border-gray-600 rounded-lg p-3 h-48 font-mono text-sm"
+                />
                 {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
-                <div className="flex gap-4 mt-6">
+                <div className="flex gap-4 mt-4">
                     <button onClick={onClose} className="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-4 rounded-lg">Cancel</button>
                     <button onClick={handleImport} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg">Load & Analyze</button>
                 </div>
@@ -149,7 +203,8 @@ function GamePage({ gameId, mode, userId, db, onExit, onGameOver }) {
     const [orientation, setOrientation] = useState('white');
     const [message, setMessage] = useState(null);
     const [copied, setCopied] = useState(false);
-    
+    const boardSize = useBoardSize();
+
     useEffect(() => {
         if (game.isGameOver()) {
             let title = "Game Over";
@@ -178,11 +233,10 @@ function GamePage({ gameId, mode, userId, db, onExit, onGameOver }) {
             if (docSnap.exists()) {
                 const data = docSnap.data();
                 const newGame = new Chess();
-                // Correctly load from PGN if it exists, otherwise load from FEN
                 if (data.pgn && data.pgn.trim() !== '') {
                     newGame.loadPgn(data.pgn);
                 } else {
-                    newGame.load(data.fen); // Use .load() for FEN strings
+                    newGame.load(data.fen);
                 }
                 setGameData(data);
                 setGame(newGame);
@@ -196,9 +250,7 @@ function GamePage({ gameId, mode, userId, db, onExit, onGameOver }) {
     }, [gameId, mode, db, userId]);
 
     useEffect(() => {
-        if (mode === 'local') {
-            setGameData({ status: 'active' });
-        }
+        if (mode === 'local') setGameData({ status: 'active' });
     }, [mode]);
 
     const onPieceDrop = useCallback((sourceSquare, targetSquare) => {
@@ -216,21 +268,18 @@ function GamePage({ gameId, mode, userId, db, onExit, onGameOver }) {
         }
         return true;
     }, [game, isPlayerTurn, mode, db, gameId]);
-    
+
     const handleCopyPgn = () => {
-        const pgn = game.pgn();
-        const textArea = document.createElement('textarea');
-        textArea.value = pgn;
-        document.body.appendChild(textArea);
-        textArea.select();
-        try {
+        navigator.clipboard.writeText(game.pgn()).catch(() => {
+            const ta = document.createElement('textarea');
+            ta.value = game.pgn();
+            document.body.appendChild(ta);
+            ta.select();
             document.execCommand('copy');
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-        } catch (err) {
-            console.error('Failed to copy PGN: ', err);
-        }
-        document.body.removeChild(textArea);
+            document.body.removeChild(ta);
+        });
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
     };
 
     const getStatusMessage = () => {
@@ -245,33 +294,35 @@ function GamePage({ gameId, mode, userId, db, onExit, onGameOver }) {
     return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 p-4">
             {message && <MessageModal title={message.title} message={message.message} onClose={() => setMessage(null)} onAnalyze={game.isGameOver() ? () => onGameOver(game.pgn(), true) : null} />}
-            
             <div className="w-full max-w-7xl mx-auto flex flex-col lg:flex-row gap-4">
-                {/* PGN Tracker - Side (Desktop) */}
+                {/* Moves sidebar — desktop */}
                 <div className="hidden lg:block w-72 bg-gray-800 p-4 rounded-lg">
                     <h3 className="text-white text-lg font-bold mb-2">Moves</h3>
                     <div className="bg-gray-900 rounded-lg p-3 h-[calc(100vh-12rem)] max-h-[600px] overflow-y-auto">
                         <p className="text-white font-mono text-sm whitespace-pre-wrap break-words">{game.pgn() || "No moves yet."}</p>
                     </div>
                 </div>
-
-                {/* Main Board and Controls */}
-                <div className="flex-1 flex flex-col">
-                    <div className="bg-gray-800 text-white p-3 rounded-t-lg text-center font-semibold text-lg">{getStatusMessage()}</div>
-                    
-                    {/* PGN Tracker - Ticker (Mobile) */}
-                    <div className="lg:hidden bg-gray-800 p-2">
+                {/* Main board */}
+                <div className="flex-1 flex flex-col items-center">
+                    <div className="bg-gray-800 text-white p-3 rounded-t-lg text-center font-semibold text-lg w-full" style={{ maxWidth: boardSize }}>
+                        {getStatusMessage()}
+                    </div>
+                    {/* Moves ticker — mobile */}
+                    <div className="lg:hidden bg-gray-800 p-2 w-full" style={{ maxWidth: boardSize }}>
                         <div className="bg-gray-900 rounded-lg p-2 overflow-x-auto whitespace-nowrap">
                             <p className="text-white font-mono text-sm">{game.pgn() || "No moves yet."}</p>
                         </div>
                     </div>
-
-                    <div className="w-full">
-                        <Chessboard position={game.fen()} onPieceDrop={onPieceDrop} boardOrientation={orientation} />
-                    </div>
-
-                    <div className="bg-gray-800 p-4 rounded-b-lg flex justify-between items-center">
-                        <button onClick={handleCopyPgn} className={`font-bold py-2 px-5 rounded-lg transition duration-300 ${copied ? 'bg-green-600' : 'bg-blue-600 hover:bg-blue-700'} text-white`}>{copied ? 'Copied!' : 'Copy PGN'}</button>
+                    <Chessboard
+                        position={game.fen()}
+                        onPieceDrop={onPieceDrop}
+                        boardOrientation={orientation}
+                        boardWidth={boardSize}
+                    />
+                    <div className="bg-gray-800 p-4 rounded-b-lg flex justify-between items-center w-full" style={{ maxWidth: boardSize }}>
+                        <button onClick={handleCopyPgn} className={`font-bold py-2 px-5 rounded-lg transition duration-300 ${copied ? 'bg-green-600' : 'bg-blue-600 hover:bg-blue-700'} text-white`}>
+                            {copied ? 'Copied!' : 'Copy PGN'}
+                        </button>
                         <button onClick={onExit} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-5 rounded-lg">Exit Game</button>
                     </div>
                 </div>
@@ -285,86 +336,100 @@ function AnalysisPage({ pgn, onExit }) {
     const [history, setHistory] = useState([]);
     const [currentMoveIndex, setCurrentMoveIndex] = useState(-1);
     const [displayFen, setDisplayFen] = useState('start');
+    const [error, setError] = useState('');
+    const boardSize = useBoardSize();
 
     useEffect(() => {
+        if (!pgn) return;
         const loadedGame = loadPgnWithRobustParsing(pgn);
         if (loadedGame) {
             setGame(loadedGame);
             setHistory(loadedGame.history({ verbose: true }));
             setCurrentMoveIndex(loadedGame.history().length - 1);
+            setError('');
+        } else {
+            setError('Could not parse PGN. Please check the format.');
         }
     }, [pgn]);
 
     useEffect(() => {
         if (!game) return;
-        if (currentMoveIndex < 0) {
-            setDisplayFen(new Chess().fen());
-            return;
-        }
+        if (currentMoveIndex < 0) { setDisplayFen(new Chess().fen()); return; }
         const tempGame = new Chess();
-        for (let i = 0; i <= currentMoveIndex; i++) {
-            tempGame.move(history[i].san);
-        }
+        for (let i = 0; i <= currentMoveIndex; i++) tempGame.move(history[i].san);
         setDisplayFen(tempGame.fen());
     }, [currentMoveIndex, game, history]);
 
-    // Keyboard navigation
     useEffect(() => {
-        const handleKeyDown = (event) => {
-            if (event.key === 'ArrowRight') {
-                setCurrentMoveIndex(prev => Math.min(prev + 1, history.length - 1));
-            } else if (event.key === 'ArrowLeft') {
-                setCurrentMoveIndex(prev => Math.max(prev - 1, -1));
-            }
+        const handleKeyDown = (e) => {
+            if (e.key === 'ArrowRight') setCurrentMoveIndex(p => Math.min(p + 1, history.length - 1));
+            else if (e.key === 'ArrowLeft') setCurrentMoveIndex(p => Math.max(p - 1, -1));
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [history.length]);
-    
-    if (!game) return <div className="min-h-screen bg-gray-900 flex justify-center items-center"><h1 className="text-white text-3xl">Loading Analysis...</h1></div>;
+
+    if (error) return (
+        <div className="min-h-screen bg-gray-900 flex flex-col justify-center items-center p-4 gap-4">
+            <h1 className="text-white text-2xl text-center">{error}</h1>
+            <button onClick={onExit} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-6 rounded-lg">Back to Home</button>
+        </div>
+    );
+
+    if (!game) return (
+        <div className="min-h-screen bg-gray-900 flex justify-center items-center">
+            <h1 className="text-white text-3xl">Loading Analysis...</h1>
+        </div>
+    );
 
     return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 p-4">
             <div className="w-full max-w-7xl mx-auto flex flex-col lg:flex-row gap-4">
-                {/* PGN Tracker - Side (Desktop) */}
+                {/* Analysis sidebar — desktop */}
                 <div className="hidden lg:block w-72 bg-gray-800 p-4 rounded-lg">
                     <h3 className="text-white text-lg font-bold mb-2">Analysis</h3>
                     <div className="bg-gray-900 rounded-lg p-3 h-[calc(100vh-16rem)] max-h-[600px] overflow-y-auto">
                         {history.map((move, index) => (
                             <div key={index} className={`p-1 rounded cursor-pointer ${currentMoveIndex === index ? 'bg-purple-800' : ''}`} onClick={() => setCurrentMoveIndex(index)}>
                                 <span className="text-white font-mono text-sm">
-                                    {index % 2 === 0 && `${Math.floor(index/2) + 1}. `}
+                                    {index % 2 === 0 && `${Math.floor(index / 2) + 1}. `}
                                     {move.san}
                                 </span>
                             </div>
                         ))}
                     </div>
                 </div>
-                
-                {/* Main Board and Controls */}
-                <div className="flex-1 flex flex-col">
-                    <div className="bg-gray-800 text-white p-3 rounded-t-lg text-center font-semibold text-lg">Game Analysis</div>
-                    <Chessboard position={displayFen} boardOrientation="white" />
-                    <div className="bg-gray-800 p-4 flex justify-center space-x-2">
+                {/* Main board */}
+                <div className="flex-1 flex flex-col items-center">
+                    <div className="bg-gray-800 text-white p-3 rounded-t-lg text-center font-semibold text-lg w-full" style={{ maxWidth: boardSize }}>
+                        Game Analysis — Move {currentMoveIndex + 1} of {history.length}
+                    </div>
+                    <Chessboard
+                        position={displayFen}
+                        boardOrientation="white"
+                        boardWidth={boardSize}
+                        arePiecesDraggable={false}
+                    />
+                    <div className="bg-gray-800 p-4 flex justify-center space-x-2 w-full" style={{ maxWidth: boardSize }}>
                         <button onClick={() => setCurrentMoveIndex(-1)} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">« First</button>
                         <button onClick={() => setCurrentMoveIndex(p => Math.max(p - 1, -1))} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">‹ Prev</button>
                         <button onClick={() => setCurrentMoveIndex(p => Math.min(p + 1, history.length - 1))} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">Next ›</button>
                         <button onClick={() => setCurrentMoveIndex(history.length - 1)} className="font-bold py-2 px-4 rounded-lg bg-gray-600 hover:bg-gray-700 text-white">Last »</button>
                     </div>
-                    {/* PGN Tracker - Ticker (Mobile) */}
-                    <div className="lg:hidden bg-gray-800 p-4">
+                    {/* Moves — mobile */}
+                    <div className="lg:hidden bg-gray-800 p-4 w-full" style={{ maxWidth: boardSize }}>
                         <div className="bg-gray-900 rounded-lg p-3 h-48 overflow-y-auto">
-                           {history.map((move, index) => (
+                            {history.map((move, index) => (
                                 <div key={index} className={`p-1 rounded cursor-pointer ${currentMoveIndex === index ? 'bg-purple-800' : ''}`} onClick={() => setCurrentMoveIndex(index)}>
                                     <span className="text-white font-mono text-sm">
-                                        {index % 2 === 0 && `${Math.floor(index/2) + 1}. `}
+                                        {index % 2 === 0 && `${Math.floor(index / 2) + 1}. `}
                                         {move.san}
                                     </span>
                                 </div>
                             ))}
                         </div>
                     </div>
-                    <div className="bg-gray-800 p-4 rounded-b-lg flex flex-wrap justify-center gap-2">
+                    <div className="bg-gray-800 p-4 rounded-b-lg flex flex-wrap justify-center gap-2 w-full" style={{ maxWidth: boardSize }}>
                         <button onClick={onExit} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg">Back to Home</button>
                     </div>
                 </div>
@@ -375,7 +440,6 @@ function AnalysisPage({ pgn, onExit }) {
 
 function HomePage({ onNewGame, onJoinGame, onLocalGame, onImportGame }) {
     const [onlinePlayerColor, setOnlinePlayerColor] = useState('random');
-
     return (
         <div className="min-h-screen bg-gray-900 flex flex-col justify-center items-center text-white p-4">
             <div className="text-center mb-12">
@@ -387,9 +451,9 @@ function HomePage({ onNewGame, onJoinGame, onLocalGame, onImportGame }) {
                     <div className="text-center mb-4">
                         <p className="text-lg font-medium text-gray-300 mb-2">Play as:</p>
                         <div className="inline-flex rounded-md shadow-sm" role="group">
-                            <button onClick={() => setOnlinePlayerColor('w')} type="button" className={`px-4 py-2 text-sm font-medium rounded-l-lg ${onlinePlayerColor === 'w' ? 'bg-blue-800 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>White</button>
-                            <button onClick={() => setOnlinePlayerColor('random')} type="button" className={`px-4 py-2 text-sm font-medium ${onlinePlayerColor === 'random' ? 'bg-blue-800 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>Random</button>
-                            <button onClick={() => setOnlinePlayerColor('b')} type="button" className={`px-4 py-2 text-sm font-medium rounded-r-lg ${onlinePlayerColor === 'b' ? 'bg-blue-800 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>Black</button>
+                            <button onClick={() => setOnlinePlayerColor('w')} className={`px-4 py-2 text-sm font-medium rounded-l-lg ${onlinePlayerColor === 'w' ? 'bg-blue-800 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>White</button>
+                            <button onClick={() => setOnlinePlayerColor('random')} className={`px-4 py-2 text-sm font-medium ${onlinePlayerColor === 'random' ? 'bg-blue-800 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>Random</button>
+                            <button onClick={() => setOnlinePlayerColor('b')} className={`px-4 py-2 text-sm font-medium rounded-r-lg ${onlinePlayerColor === 'b' ? 'bg-blue-800 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>Black</button>
                         </div>
                     </div>
                     <button onClick={() => onNewGame(onlinePlayerColor)} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-4 rounded-lg text-xl shadow-lg">Create Online Game</button>
@@ -427,7 +491,7 @@ export default function App() {
         if (!auth) return;
         const unsubscribe = onAuthStateChanged(auth, async (user) => {
             if (!user) {
-                try { await signInAnonymously(auth); } catch (error) { setMessage({ title: "Auth Error", message: "Could not sign in." }); }
+                try { await signInAnonymously(auth); } catch { setMessage({ title: "Auth Error", message: "Could not sign in." }); }
             } else {
                 setUserId(user.uid);
             }
@@ -438,9 +502,7 @@ export default function App() {
 
     const handleGameOver = useCallback((pgn, analyze = false) => {
         setPgnToAnalyze(pgn);
-        if (analyze) {
-            setPage('analysis');
-        }
+        if (analyze) setPage('analysis');
     }, []);
 
     const handleNewOnlineGame = useCallback(async (color) => {
@@ -449,29 +511,23 @@ export default function App() {
         const newGameId = doc(collection(db, `artifacts/${appId}/public/data/games`)).id;
         const shortCode = generateShortCode();
         const gameRef = doc(db, `artifacts/${appId}/public/data/games`, newGameId);
-        
-        let chosenColor = color;
-        if (color === 'random') {
-            chosenColor = Math.random() > 0.5 ? 'w' : 'b';
-        }
-
-        const initialGame = { 
-            fen: new Chess().fen(), 
-            pgn: '', 
-            shortCode, 
-            playerWhite: chosenColor === 'w' ? userId : null, 
-            playerBlack: chosenColor === 'b' ? userId : null, 
-            status: 'waiting', 
-            createdAt: serverTimestamp() 
+        let chosenColor = color === 'random' ? (Math.random() > 0.5 ? 'w' : 'b') : color;
+        const initialGame = {
+            fen: new Chess().fen(), pgn: '', shortCode,
+            playerWhite: chosenColor === 'w' ? userId : null,
+            playerBlack: chosenColor === 'b' ? userId : null,
+            status: 'waiting', createdAt: serverTimestamp()
         };
         await setDoc(gameRef, initialGame);
         setGameId(newGameId);
         setGameMode('online');
         setPage('game');
-        setMessage({ title: "Game Created!", message: `Share this code: ${shortCode.toUpperCase()}`, onShare: (data) => {
-            const url = `${window.location.origin}?gameId=${data.gameId}`;
-            navigator.clipboard.writeText(url);
-        }, shareData: { gameId: newGameId } });
+        setMessage({
+            title: "Game Created!",
+            message: `Share this code: ${shortCode.toUpperCase()}`,
+            onShare: (data) => { navigator.clipboard.writeText(`${window.location.origin}?gameId=${data.gameId}`); },
+            shareData: { gameId: newGameId }
+        });
         setIsLoading(false);
     }, [db, userId]);
 
@@ -491,11 +547,8 @@ export default function App() {
                 setMessage({ title: "Oops!", message: "You can't join your own game." });
             } else {
                 const updates = { status: 'active' };
-                if (gameData.playerWhite === null) {
-                    updates.playerWhite = userId;
-                } else {
-                    updates.playerBlack = userId;
-                }
+                if (gameData.playerWhite === null) updates.playerWhite = userId;
+                else updates.playerBlack = userId;
                 await updateDoc(doc(db, `artifacts/${appId}/public/data/games`, gameDoc.id), updates);
                 setGameId(gameDoc.id);
                 setGameMode('online');
@@ -504,40 +557,28 @@ export default function App() {
         }
         setIsLoading(false);
     }, [db, userId]);
-    
-    const handleLocalGame = useCallback(() => {
-        setGameId(null);
-        setGameMode('local');
-        setPage('game');
-    }, []);
+
+    const handleLocalGame = useCallback(() => { setGameId(null); setGameMode('local'); setPage('game'); }, []);
 
     const handleImportPgn = useCallback((pgn) => {
         setShowImportModal(false);
         const loadedGame = loadPgnWithRobustParsing(pgn);
-
         if (!loadedGame) {
-            setMessage({ title: "Invalid PGN", message: "Could not load the PGN. Please check the format and moves." });
+            setMessage({ title: "Invalid PGN", message: "Could not load the PGN. Please check the format and try again.\n\nTip: Copy the full PGN including headers from Chess.com or Lichess." });
             return;
         }
-        
         setPgnToAnalyze(pgn);
         setPage('analysis');
     }, []);
 
-    const handleExitGame = useCallback(() => {
-        setPage('home');
-        setGameId(null);
-    }, []);
+    const handleExitGame = useCallback(() => { setPage('home'); setGameId(null); }, []);
 
     const renderContent = () => {
         if (isLoading) return <div className="min-h-screen bg-gray-900 flex justify-center items-center"><h1 className="text-white text-3xl">Loading...</h1></div>;
         switch (page) {
-            case 'game':
-                return <GamePage gameId={gameId} mode={gameMode} userId={userId} db={db} onExit={handleExitGame} onGameOver={handleGameOver} />;
-            case 'analysis':
-                return <AnalysisPage pgn={pgnToAnalyze} onExit={handleExitGame} />;
-            default:
-                return <HomePage onNewGame={handleNewOnlineGame} onJoinGame={() => setShowJoinModal(true)} onLocalGame={handleLocalGame} onImportGame={() => setShowImportModal(true)} />;
+            case 'game': return <GamePage gameId={gameId} mode={gameMode} userId={userId} db={db} onExit={handleExitGame} onGameOver={handleGameOver} />;
+            case 'analysis': return <AnalysisPage pgn={pgnToAnalyze} onExit={handleExitGame} />;
+            default: return <HomePage onNewGame={handleNewOnlineGame} onJoinGame={() => setShowJoinModal(true)} onLocalGame={handleLocalGame} onImportGame={() => setShowImportModal(true)} />;
         }
     };
 
